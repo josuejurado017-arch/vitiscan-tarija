@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgresql://postgres:cisco@localhost:5432/vitiscan_db"
+      ]
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "D:\\desarrollo\\vitiscan-tarija",
+        "D:\\Desarrollo\\hackathon"
+      ]
+    },
+    "supabase": {
+      "url": "https://mcp.supabase.com/mcp?project_ref=skvamrwqgntfxzbvdilx&read_only=true&features=docs%2Caccount%2Cdatabase%2Cdebugging%2Cdevelopment%2Cfunctions%2Cbranching%2Cfeedback",
+      "serverUrl": "https://mcp.supabase.com/mcp?project_ref=skvamrwqgntfxzbvdilx&read_only=true&features=docs%2Caccount%2Cdatabase%2Cdebugging%2Cdevelopment%2Cfunctions%2Cbranching%2Cfeedback"
+    }
+  }
+}
