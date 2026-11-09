@@ -1,0 +1,74 @@
+<div class="min-h-screen bg-[#0b0f19] text-gray-100 flex flex-col font-sans">
+  <!-- Navbar Superior -->
+  <header class="border-b border-gray-800 bg-gray-900/90 backdrop-blur-md sticky top-0 z-50 px-4 lg:px-8 py-3">
+    <div class="max-w-7xl mx-auto flex items-center justify-between">
+      <!-- Logo & Marca -->
+      <a routerLink="/dashboard" class="flex items-center gap-3 group">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-emerald-400 p-0.5 shadow-lg shadow-indigo-600/30">
+          <div class="w-full h-full bg-gray-900 rounded-[10px] flex items-center justify-center text-lg">
+            🍇
+          </div>
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="font-extrabold text-lg text-white tracking-tight">VitiScan</span>
+            <span class="text-xs px-2 py-0.5 rounded font-mono font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
+              TARIJA
+            </span>
+          </div>
+          <p class="text-[11px] text-gray-400">Agricultura de Precisión & Drones</p>
+        </div>
+      </a>
+
+      <!-- Navegación Principal -->
+      <nav class="hidden md:flex items-center gap-1 bg-gray-800/60 p-1 rounded-xl border border-gray-700/60">
+        <a routerLink="/dashboard"
+           routerLinkActive="bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+           [routerLinkActiveOptions]="{ exact: true }"
+           class="px-4 py-2 rounded-lg text-xs font-semibold text-gray-300 hover:text-white transition flex items-center gap-2">
+          <span>📊</span>
+          <span>Dashboard</span>
+        </a>
+
+        <a routerLink="/digital-twin"
+           routerLinkActive="bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+           class="px-4 py-2 rounded-lg text-xs font-semibold text-gray-300 hover:text-white transition flex items-center gap-2">
+          <span>🌐</span>
+          <span>Gemelo Digital 3D</span>
+        </a>
+
+        <a routerLink="/flight-monitor"
+           routerLinkActive="bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+           class="px-4 py-2 rounded-lg text-xs font-semibold text-gray-300 hover:text-white transition flex items-center gap-2">
+          <span>🛰️</span>
+          <span>Monitor de Vuelo</span>
+        </a>
+      </nav>
+
+      <!-- Estado del Sistema -->
+      <div class="flex items-center gap-3">
+        <div class="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+          <span>PostgreSQL & .NET 8 Online</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Menú Móvil Inferior en pantallas pequeñas -->
+    <div class="flex md:hidden justify-around mt-3 pt-2 border-t border-gray-800 text-xs">
+      <a routerLink="/dashboard" routerLinkActive="text-indigo-400 font-bold" class="py-1">Dashboard</a>
+      <a routerLink="/digital-twin" routerLinkActive="text-indigo-400 font-bold" class="py-1">Gemelo 3D</a>
+      <a routerLink="/flight-monitor" routerLinkActive="text-indigo-400 font-bold" class="py-1">Vuelo IA</a>
+    </div>
+  </header>
+
+  <!-- Contenedor Principal de Vistas -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 lg:p-8">
+    <router-outlet></router-outlet>
+  </main>
+
+  <!-- Footer -->
+  <footer class="border-t border-gray-800/80 py-4 text-center text-xs text-gray-400 bg-gray-950">
+    <p>VitiScan Tarija © 2026 — Solución Integral de Monitoreo Vitivinícola para Hackathon</p>
+  </footer>
+</div>

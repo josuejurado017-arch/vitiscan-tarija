@@ -1,0 +1,37 @@
+@HostAddress = http://localhost:5000
+
+### 1. Evaluar Detección de IA (Disparo Automático de Orden de Riego)
+# Si Clasificacion es "Estrés Hídrico Severo" y Confianza > 0.80, crea OrdenRiego en "PendienteAprobacion"
+POST {{HostAddress}}/api/riego/procesar-analisis-ia
+Content-Type: application/json
+
+{
+  "parcelaId": 1,
+  "misionVueloId": 1,
+  "clasificacion": "Estrés Hídrico Severo",
+  "confianza": 0.89,
+  "coordenadasPunto": "-21.5721,-64.7478",
+  "sectorValvula": "VALVULA_SECTOR_B",
+  "duracionSugeridaMinutos": 25,
+  "imagenUrl": "https://images.unsplash.com/photo-1506619216599-9d16d0903dfd?w=600"
+}
+
+### 2. Consultar Orden de Riego Creada (Estado: PendienteAprobacion)
+GET {{HostAddress}}/api/riego/1
+Accept: application/json
+
+### 3. Aprobación Manual del Enólogo (Human-in-the-loop)
+# Emite MQTT "VALVULA_SECTOR_B: OPEN: 25min" y genera firma SHA-256 de auditoría
+POST {{HostAddress}}/api/riego/1/aprobar
+Content-Type: application/json
+
+{
+  "nombreSupervisor": "Ing. Carlos Mendoza (Enólogo Principal)",
+  "matriculaProfesional": "COL-AGR-7482-TJA",
+  "duracionMinutosAjustada": 25,
+  "observacionesAgronomicas": "Validación en campo positiva. Se autoriza lámina de riego de 25 min para mitigar estrés hídrico en Syrah Sector B."
+}
+
+### 4. Consultar Todas las Órdenes de Riego y su Auditoría
+GET {{HostAddress}}/api/riego
+Accept: application/json

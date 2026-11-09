@@ -1,0 +1,27 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: vitiscan_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: vitiscan_tarija
+    ports:
+      - "5432:5432"
+    volumes:
+      - vitiscan_pgdata:/var/lib/postgresql/data
+
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    container_name: vitiscan_ai_service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./ai-service:/app
+
+volumes:
+  vitiscan_pgdata:
