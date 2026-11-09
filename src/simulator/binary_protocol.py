@@ -1,4 +1,8 @@
-"""Protocolo v2: binario little-endian estricto; ppm exclusivamente sinteticos."""
+"""Layout v2 little-endian; perfil demo de gas sintetico 0..1000 ppm.
+
+El perfil amplia solo el rango de gas del contrato congelado (0..500), que se
+lee sin modificar. No declarar conformidad semantica con v2 para gas >500.
+"""
 
 from __future__ import annotations
 
@@ -33,6 +37,7 @@ _LEVELS = {0: 0, **{row['node_id']: row['level'] for row in CONTRACT['topology']
 SYNTHETIC = 1 << 7
 FIRE_TRIGGERED = 1 << 6
 GAS_INVALID = 1 << 4
+SYNTHETIC_GAS_RANGE = (0, 1000)
 
 
 class ProtocolError(ValueError):
@@ -58,7 +63,8 @@ class NodeReading:
     def validate(self) -> None:
         values = astuple(self)
         for field, value in zip(CONTRACT['radio']['reading_fields'], values):
-            _integer(value, *field['range'], field['name'])
+            bounds = SYNTHETIC_GAS_RANGE if field['name'] == 'gas_smoke_ppm' else field['range']
+            _integer(value, *bounds, field['name'])
         for bit, value in enumerate(values[1:7]):
             if self.status_flags & (1 << bit) and value != 0:
                 raise ProtocolError(f'Canal invalido {bit}: requiere placeholder 0.')

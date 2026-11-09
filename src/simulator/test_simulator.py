@@ -60,7 +60,7 @@ class BinaryTests(unittest.TestCase):
                 unpack_packet(packet)
 
     def test_semantic_validation(self):
-        for reading in (replace(self.reading, gas_smoke_ppm=501),
+        for reading in (replace(self.reading, gas_smoke_ppm=1001),
                         replace(self.reading, battery_pct=101),
                         replace(self.reading, amb_temp_x10=-401),
                         replace(self.reading, node_id=True),
@@ -71,6 +71,19 @@ class BinaryTests(unittest.TestCase):
                 reading.pack()
         valid_real = replace(self.reading, gas_smoke_ppm=0, status_flags=GAS_INVALID)
         self.assertEqual(NodeReading.unpack(valid_real.pack()), valid_real)
+
+    def test_synthetic_gas_demo_range_without_contract_mutation(self):
+        for gas in (0, 500, 501, 900, 1000):
+            reading = replace(self.reading, gas_smoke_ppm=gas)
+            payload = pack_packet(self.header, [reading])
+            self.assertEqual(unpack_packet(payload)[1], (reading,))
+        self.assertEqual(replace(self.reading, gas_smoke_ppm=1000).pack()[8:10], b'\xe8\x03')
+        for gas in (-1, 1001, 65535):
+            with self.subTest(gas=gas), self.assertRaises(ProtocolError):
+                replace(self.reading, gas_smoke_ppm=gas).pack()
+        gas_field = next(field for field in CONTRACT['radio']['reading_fields']
+                         if field['name'] == 'gas_smoke_ppm')
+        self.assertEqual(gas_field['range'], [0, 500])
 
     def test_counts_duplicates_and_empty_data(self):
         with self.assertRaises(ProtocolError):
@@ -127,6 +140,40 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(len(attempts), 3)
         recovered = network.run_cascade()
         self.assertEqual(recovered.missing_node_ids, [6])
+
+    def test_level_one_failure_uses_observed_backup(self):
+        network = CascadeNetwork()
+        network.run_cascade()
+        backup = network.nodes[6].backup_parent
+        self.assertIsNotNone(backup)
+        network.set_node_alive(1, False)
+        self.assertEqual(network.nodes[6].primary_parent, 1)
+        degraded = network.run_cascade()
+        self.assertEqual(degraded.missing_node_ids, [1, 6, 11, 16])
+        self.assertIn((6, 1, backup), degraded.failovers)
+        attempts = [event for event in network._last_cascade_events
+                    if event.sender_id == 6 and event.kind == MessageType.CASCADE_DATA]
+        self.assertEqual(len(attempts), 3)
+        self.assertTrue(all(event.target_id == 1 for event in attempts))
+        recovered = network.run_cascade()
+        self.assertEqual(recovered.missing_node_ids, [1])
+        self.assertEqual(network.nodes[6].primary_parent, backup)
+        fire = network.trigger_fire(16, gas_smoke_ppm=1000)
+        self.assertIn(fire.pack(), network.run_fire_alerts())
+
+    def test_trace_rejects_guard_intrusion_and_invalid_listen_window(self):
+        network = CascadeNetwork()
+        network.run_cascade()
+        index = next(index for index, event in enumerate(network.events) if event.phase == 'cascade')
+        event = network.events[index]
+        network.events[index] = replace(event, start_ms=event.start_ms - 1)
+        with self.assertRaises(RuntimeError):
+            network.validate_trace()
+        network.events[index] = event
+        window = network.listen_windows[0]
+        network.listen_windows[0] = replace(window, end_ms=window.end_ms + 1)
+        with self.assertRaises(RuntimeError):
+            network.validate_trace()
 
     def test_all_parents_down_and_gateway_down(self):
         network = CascadeNetwork()

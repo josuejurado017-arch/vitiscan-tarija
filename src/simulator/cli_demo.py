@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 if __package__:
-    from .binary_protocol import (CONTRACT, HEADER_STRUCT, READING_STRUCT, Header,
+    from .binary_protocol import (CONTRACT, HEADER_STRUCT, READING_STRUCT, SYNTHETIC_GAS_RANGE, Header,
                                   MessageType, NodeReading, fragment_readings,
                                   pack_packet, unpack_packet)
     from .cascade_network import CascadeNetwork
 else:
-    from binary_protocol import (CONTRACT, HEADER_STRUCT, READING_STRUCT, Header,
+    from binary_protocol import (CONTRACT, HEADER_STRUCT, READING_STRUCT, SYNTHETIC_GAS_RANGE, Header,
                                  MessageType, NodeReading, fragment_readings,
                                  pack_packet, unpack_packet)
     from cascade_network import CascadeNetwork
 
 
 def main() -> None:
-    print('VINEDOS TARIJA | simulador ESP-NOW | contrato ' + CONTRACT['version'])
-    print('SOLO SIMULACION: gas 0..500 ppm sinteticos; no calibracion MQ-2 ni radio real.\n')
+    print('VINEDOS TARIJA | simulador ESP-NOW | layout del contrato ' + CONTRACT['version'])
+    print(f'SOLO SIMULACION: gas {SYNTHETIC_GAS_RANGE[0]}..{SYNTHETIC_GAS_RANGE[1]} ppm sinteticos; '
+          'sin calibracion MQ-2 ni radio real.')
+    print('Perfil demo solicitado: gas >500 fuera del contrato v2 congelado; contrato SIN MODIFICAR.\n')
     network = CascadeNetwork()
     sample = NodeReading(**CONTRACT['samples']['raw'])
     reading_bytes = sample.pack()
@@ -56,18 +58,23 @@ def main() -> None:
     print(f'Gateway: {len(normal.readings)}/20 lecturas unicas; faltantes={normal.missing_node_ids}')
     print('Superframe=1500 ms; cascada=[0,1200); escucha alerta=35 ms en [1200,1420).\n')
 
-    print('[3] CAIDA Y CONMUTACION AUTOMATICA')
-    network.set_node_alive(6, False)
+    print('[3] CAIDA EN NIVEL 1 Y CONMUTACION AUTOMATICA')
+    backup = network.nodes[6].backup_parent
+    network.set_node_alive(1, False)
     degraded = network.run_cascade()
-    print(f'Caida V-06: {len(degraded.readings)}/20 lecturas; faltantes={degraded.missing_node_ids}')
+    print(f'Caida V-01 (N1): {len(degraded.readings)}/20 lecturas; faltantes={degraded.missing_node_ids}')
+    if (6, 1, backup) not in degraded.failovers:
+        raise RuntimeError('V-06 no conmuto al backup observado tras caer V-01.')
     for node_id, old, new in degraded.failovers:
         print(f'V-{node_id:02d}: 3 intentos sin ACK -> padre {old} a {new}, al limite del epoch')
     recovered = network.run_cascade()
+    if recovered.missing_node_ids != [1]:
+        raise RuntimeError('La cascada no recupero los descendientes de V-01.')
     print(f'Siguiente cascada: {len(recovered.readings)}/20; faltantes={recovered.missing_node_ids}')
-    print('No se inventan lecturas de V-06 ni se reciclan muestras del epoch anterior.\n')
+    print('No se inventan lecturas de V-01 ni se reciclan muestras del epoch anterior.\n')
 
     print('[4] FLOODING DE INCENDIO FUERA DE CICLO')
-    fire = network.trigger_fire(16)
+    fire = network.trigger_fire(16, gas_smoke_ppm=900)
     fire_started = network.clock_ms
     alerts = network.run_fire_alerts(4)
     delivered_at = alerts.get(fire.pack())
@@ -75,6 +82,15 @@ def main() -> None:
         raise RuntimeError('La alerta de demostracion no llego al Gateway.')
     fire_events = [event for event in network.events if event.kind == MessageType.FIRE_ALERT]
     print(f'V-16: gas={fire.gas_smoke_ppm} ppm sinteticos; umbral=300 ppm')
+    print('FIRE_ALERT HEX (18 B): ' + fire_events[0].payload.hex(' '))
+    for level in CONTRACT['tdma']['level_order']:
+        event = next(event for event in fire_events if network.nodes[event.sender_id].level == level)
+        receiver = event.received_by[0]
+        window = next(window for window in network.listen_windows if window.node_id == receiver
+                      and window.start_ms <= event.start_ms < window.end_ms)
+        print(f'N{level}->N{level - 1}: TX +{event.start_ms - fire_started} ms; '
+              f'RX nodo {receiver:02d} [{window.start_ms - fire_started},'
+              f'{window.end_ms - fire_started}) ms = 35 ms')
     print(f'{len(fire_events)} broadcasts de 18 B; {len(alerts)} evento unico en Gateway (deduplicado).')
     print(f'Entrega simulada: {delivered_at - fire_started} ms desde inyeccion; '
           'sin garantia de latencia en hardware.')

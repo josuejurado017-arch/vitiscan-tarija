@@ -361,7 +361,7 @@ class CascadeNetwork:
         return dict(self.gateway_alerts)
 
     def validate_trace(self) -> None:
-        """Ningun dispositivo participa en dos emisiones/recepciones simultaneas."""
+        """Verifica half-duplex, subslots completos y escucha de alerta de 35 ms."""
         occupied: dict[int, int] = {}
         for event in sorted(self.events, key=lambda event: event.start_ms):
             for node_id in (event.sender_id, *event.received_by):
@@ -369,10 +369,32 @@ class CascadeNetwork:
                     raise RuntimeError(f'Colision half-duplex en nodo {node_id}.')
                 occupied[node_id] = event.end_ms
             phase = event.start_ms % self.timing['superframe']
-            if event.phase == 'cascade' and phase >= 1200:
-                raise RuntimeError('Cascada fuera de su reserva.')
-            if event.phase == 'alert' and not 1200 <= phase < 1420:
-                raise RuntimeError('Alerta fuera de micro-ventanas.')
+            duration = event.end_ms - event.start_ms
+            if event.phase == 'cascade':
+                child_id = event.target_id if event.kind == MessageType.ACK else event.sender_id
+                child = self.nodes[child_id]
+                start = (CONTRACT['tdma']['level_offsets_ms'][str(child.level)]
+                         + self.timing['guard'] + self.timing['subslot'] * (child.branch - 1))
+                if not start <= phase < phase + duration <= start + self.timing['subslot_active']:
+                    raise RuntimeError('Cascada fuera del subslot activo; invade guarda u otro nivel.')
+            if event.phase == 'alert':
+                sender = self.nodes[event.sender_id]
+                start = (self.timing['alert_start'] + self.timing['alert_round'] * (4 - sender.level)
+                         + self.timing['alert_listen'] + sender.branch - 1)
+                if phase != start or duration != self.timing['alert_airtime']:
+                    raise RuntimeError('Alerta fuera de su mini-TX reservado.')
+                for receiver in event.received_by:
+                    if not any(window.node_id == receiver and window.start_ms <= event.start_ms
+                               and event.end_ms <= window.end_ms for window in self.listen_windows):
+                        raise RuntimeError('Receptor de alerta fuera de su ventana de escucha.')
+                if any(window.node_id == event.sender_id and window.start_ms < event.end_ms
+                       and event.start_ms < window.end_ms for window in self.listen_windows):
+                    raise RuntimeError('TX de alerta durante escucha del mismo nodo.')
+        for window in self.listen_windows:
+            phase = window.start_ms % self.timing['superframe']
+            if (window.end_ms - window.start_ms != self.timing['alert_listen']
+                    or not 1200 <= phase < phase + self.timing['alert_listen'] <= 1420):
+                raise RuntimeError('Escucha distinta de 35 ms o solapada con la cascada.')
 
     def battery_report(self, node_id: int, cells: int = 1,
                        telemetry_interval_s: float = 900) -> dict[str, float]:

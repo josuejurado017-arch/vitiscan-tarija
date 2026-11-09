@@ -20,3 +20,9 @@
 - **Micro-ventanas de Alerta (MQ-2):** 35 ms de escucha periódica sin colisionar con la cascada.
 - **Integridad Binaria:** Cabecera exacta de 6 bytes sin timestamp integrado ni ID de ciclo; el simulador usa reloj virtual común y epochs externos. La marca temporal del padre por un canal de control externo queda pendiente antes del firmware físico.
 - **Registro en Obsidian:** [[.obsidian-memory/decisions/01-sincronizacion-ventanas-alerta|ADR-001: Sincronización y Ventanas de Alerta]]
+
+## 4. Estado de Implementación - Fase 1 Completada
+- **Módulo:** src/simulator/ (100% operativo, 21 tests aprobados).
+- **Métricas verificadas:** Cabecera 6B, Payload 12B/nodo, fragmentación máx 246B.
+- **Pruebas superadas:** Cascada 20/20, Failover V-01 -> V-02 (19/20), Alerta de incendio V-16 en ventanas de 35 ms.
+- **Nota de contrato:** Rango 0-500 ppm cumple contrato congelado; 0-1000 ppm habilitado como perfil demo.
