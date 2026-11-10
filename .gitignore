@@ -17,8 +17,13 @@ npm-debug.log
 Thumbs.db
 
 # Backend Python: artefactos de ejecucion y datos locales sinteticos
+venv/
+.venv/
 __pycache__/
+.pytest_cache/
 *.py[cod]
+*.db-wal
+*.db-shm
 /data/*.db
 /data/*.db-wal
 /data/*.db-shm

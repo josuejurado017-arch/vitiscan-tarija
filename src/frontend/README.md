@@ -112,6 +112,12 @@ simulado. La fase/latencia conserva el reloj virtual externo. No se resta toda
 la duración virtual a UTC: ejecutar escenarios sin espera no debe hacer que una
 alerta nueva quede detrás de una muestra anterior en el historial.
 
+Auditoría: respuestas 5xx/409 o confirmaciones inválidas conservan UUID al
+reintentar; no se interpreta un resultado incompleto como éxito. El visor HEX
+valida también IDs/niveles/rangos/flags. Al cambiar capa se retira la malla previa
+para no presentar valores viejos con unidades nuevas. `/index.html` inicia la
+misma sesión segura que `/`; la tabla mantiene foco de teclado al refrescar.
+
 ## Verificación
 
 ```powershell

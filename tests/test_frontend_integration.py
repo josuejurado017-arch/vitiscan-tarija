@@ -68,6 +68,12 @@ class FrontendIntegrationTests(unittest.TestCase):
         parser.feed(response.text)
         self.assertTrue({'map', 'fire-banner', 'hex-viewer', 'heat-layer', 'active-count'} <= parser.ids)
 
+    def test_direct_index_bootstraps_the_same_secure_demo_session(self):
+        response = self.client.get('/index.html')
+        self.assertIn('HttpOnly', response.headers['set-cookie'])
+        self.assertEqual(response.headers['x-frame-options'], 'DENY')
+        self.assertEqual(self.trigger('cascade').status_code, 200)
+
     def test_all_local_assets_serve_200_with_expected_mime(self):
         parser = AssetParser()
         parser.feed(self.client.get('/').text)

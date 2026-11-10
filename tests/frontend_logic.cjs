@@ -7,7 +7,11 @@ const vm = require('node:vm');
 const context = {window: {addEventListener() {}}, document: {addEventListener() {}}, console};
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/frontend/app.js'), 'utf8'), context);
-const {parseFrame, parentFor, nodeVisualState, nodeLabel} = context.window.VitiScan;
+const {parseFrame, parentFor, nodeVisualState, nodeLabel, uncertainFailure} = context.window.VitiScan;
+assert.equal(uncertainFailure({status: 503}), true);
+assert.equal(uncertainFailure({status: 409}), true);
+assert.equal(uncertainFailure({}), true);
+assert.equal(uncertainFailure({status: 401}), false);
 
 const nominal = {node_id: 6, state: 'online', primary_parent: 1, operational_parent_id: 1};
 assert.equal(parentFor(nominal), 1);
@@ -50,6 +54,12 @@ assert.equal(Buffer.from(frame.bytes).toString('hex'), payload.toString('hex'));
 for (const hex of ['', 'zz', 'a', '00 02 01 01 00 00', payload.toString('hex') + '00']) {
   assert.throws(() => parseFrame(hex));
 }
+const duplicate = Buffer.from(payload); duplicate[18] = 1;
+assert.throws(() => parseFrame(duplicate.toString('hex')));
+const wrongLevel = Buffer.from(payload); wrongLevel[2] = 4;
+assert.throws(() => parseFrame(wrongLevel.toString('hex')));
+const outOfRange = Buffer.from(payload); outOfRange.writeUInt16LE(1001, 14);
+assert.throws(() => parseFrame(outOfRange.toString('hex')));
 const fire = Buffer.from('a5ff0101ff0110e600e30d1f013ec2015fc0', 'hex');
 const fireFrame = parseFrame(fire.toString('hex'));
 assert.equal(fireFrame.type, 255);

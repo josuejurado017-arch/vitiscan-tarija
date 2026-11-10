@@ -6,7 +6,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from binary_protocol import (CONTRACT, FIRE_TRIGGERED, GAS_INVALID, HEADER_STRUCT,
-                             READING_STRUCT, SYNTHETIC, Header, MessageType,
+                             MAX_PAYLOAD_BYTES, READING_STRUCT, SYNTHETIC, Header, MessageType,
                              NodeReading, ProtocolError, fragment_readings,
                              pack_packet, unpack_packet)
 from cascade_network import CascadeNetwork
@@ -19,6 +19,7 @@ class BinaryTests(unittest.TestCase):
 
     def test_sizes_and_contract_sample(self):
         self.assertEqual((HEADER_STRUCT.size, READING_STRUCT.size), (6, 12))
+        self.assertEqual(MAX_PAYLOAD_BYTES, 246)
         payload = pack_packet(self.header, [self.reading])
         self.assertEqual(payload.hex(' '), CONTRACT['samples']['radio_data_hex'])
         self.assertEqual(unpack_packet(payload), (self.header, (self.reading,)))
@@ -97,6 +98,36 @@ class BinaryTests(unittest.TestCase):
 
 
 class NetworkTests(unittest.TestCase):
+    def test_invalid_ids_are_rejected_without_mutating_nodes(self):
+        network = CascadeNetwork()
+        for node_id in (True, False, -1, 21, 1.0, '1', None):
+            for operation in (network.sample, network.trigger_fire):
+                with self.subTest(node_id=node_id, operation=operation), self.assertRaises(ValueError):
+                    operation(node_id)
+            with self.assertRaises(ValueError):
+                network.set_node_alive(node_id, False)
+        self.assertTrue(network.nodes[1].alive)
+
+    def test_identical_fire_bytes_form_a_new_event_after_retention(self):
+        network = CascadeNetwork()
+        network.run_cascade()
+        first = network.trigger_fire(16)
+        first_at = network.run_fire_alerts()[first.pack()]
+        network.clock_ms += 121500
+        start = network.clock_ms
+        second = network.trigger_fire(16)
+        second_at = network.run_fire_alerts()[second.pack()]
+        self.assertGreater(second_at, first_at)
+        self.assertGreaterEqual(second_at, start)
+
+    def test_trace_rejects_event_header_mismatch(self):
+        network = CascadeNetwork()
+        network.run_cascade()
+        event = network.events[0]
+        network.events[0] = replace(event, sender_id=1)
+        with self.assertRaises(RuntimeError):
+            network.validate_trace()
+
     def test_discovery_rssi_and_topology(self):
         network = CascadeNetwork()
         network.discover()

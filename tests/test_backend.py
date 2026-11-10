@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import timedelta
 from hashlib import sha256
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -344,8 +345,86 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(sha256((ROOT / '.contracts' / '02_system_contract.json').read_bytes()).hexdigest().upper(),
                          'B7B5C98FDBEFE7D0DAADBBB4EEA04F21CD5601E186555836C5AE50A4228D1356')
 
+    def test_ambiguous_or_non_utf8_json_is_rejected_before_writing(self):
+        headers = {'Authorization': 'Bearer test-ingest', 'Content-Type': 'application/json'}
+        for payload in (b'{"cycle_id":"first","cycle_id":"second"}',
+                        ('[' * 1100 + '0' + ']' * 1100).encode(), '{}'.encode('utf-16')):
+            with self.subTest(payload=payload[:50]):
+                response = self.client.post('/api/v1/gateway/ingest', content=payload, headers=headers)
+                self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(self.count('telemetry'), 0)
+
+    def test_reception_timestamp_must_be_rfc3339_not_epoch_or_date(self):
+        for timestamp in (self.received_at.timestamp(), '2026-11-09', '2026-11-09 12:00:00Z', '12345'):
+            response = self.client.post('/api/v1/gateway/ingest', headers={'Authorization': 'Bearer test-ingest'},
+                                        json={'payload_hex': self.packet().hex(), 'cycle_id': str(uuid4()),
+                                              'received_at': timestamp})
+            self.assertEqual(response.status_code, 422, response.text)
+
+    def test_radio_flag_and_known_latency_upgrade_a_deduplicated_gas_event(self):
+        reading = replace(self.sample, gas_smoke_ppm=450, status_flags=SYNTHETIC | FIRE_TRIGGERED)
+        self.ingest(self.packet([reading]), received_at=self.received_at - timedelta(seconds=1))
+        fire = pack_packet(Header(MessageType.FIRE_ALERT, 1, 1, 255, 1), [reading])
+        self.database.ingest(fire, cycle_id=str(uuid4()), received_at=self.received_at,
+                             latency_ms=1401, latency_source='simulator_external',
+                             listen_window_ms=35, gateway_phase_ms=1401)
+        alerts = self.database.alerts()
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]['reason'], 'radio_flag')
+        self.assertEqual(alerts[0]['latency_ms'], 1401)
+
+    def test_out_of_order_replay_cannot_regress_alert_last_seen(self):
+        reading = replace(self.sample, gas_smoke_ppm=450)
+        self.ingest(self.packet([reading]), received_at=self.received_at)
+        self.ingest(self.packet([reading]), received_at=self.received_at - timedelta(seconds=10))
+        alerts = self.database.alerts()
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]['last_seen_at'], utc_text(self.received_at))
+        self.assertEqual(alerts[0]['first_seen_at'], utc_text(self.received_at - timedelta(seconds=10)))
+
+    def test_active_alerts_sort_before_restored_recent_events(self):
+        first = replace(self.sample, gas_smoke_ppm=400)
+        second = replace(self.sample, node_id=2, gas_smoke_ppm=450)
+        self.ingest(self.packet([first]), received_at=self.received_at - timedelta(seconds=10))
+        self.ingest(self.packet([second]))
+        with self.database.connection(write=True) as connection:
+            connection.execute("UPDATE fire_alerts SET state='inactive' WHERE node_id=2")
+        self.assertEqual([item['node_id'] for item in self.database.alerts()], [1, 2])
+
+    def test_coordinator_metadata_without_samples_eventually_becomes_stale(self):
+        network = CascadeNetwork()
+        network.discover()
+        self.database.update_network_state(network, received_at=self.received_at)
+        later = self.received_at + timedelta(seconds=3601)
+        with patch('src.backend.database.utc_now', return_value=later):
+            node = self.database.node_status()[5]
+        self.assertEqual(node['state'], 'stale')
+        self.assertIsNone(node['operational_parent_id'])
+        self.assertIsNone(node['rssi_dbm'])
+
+    def test_gateway_alert_phase_and_window_metadata_are_strict(self):
+        payload = self.packet([replace(self.sample, gas_smoke_ppm=450)])
+        for metadata in ({'listen_window_ms': 35.0}, {'listen_window_ms': 35}, {'gateway_phase_ms': 1235}):
+            with self.subTest(metadata=metadata), self.assertRaises(ValueError):
+                self.database.ingest(payload, cycle_id=str(uuid4()), received_at=self.received_at, **metadata)
+
 
 class IDWTests(unittest.TestCase):
+    def test_non_finite_inputs_are_rejected_and_large_distances_stay_stable(self):
+        for value in (float('nan'), float('inf')):
+            with self.assertRaises(ValueError):
+                idw_value(0, 0, [(1, 0, value)])
+        self.assertAlmostEqual(idw_value(0, 0, [(1e200, 0, 0), (2e200, 0, 100)]), 20)
+
+    def test_malformed_or_out_of_range_sources_are_excluded(self):
+        now = utc_now()
+        row = {**CONTRACT['topology']['nodes'][0], **CONTRACT['samples']['raw'],
+               'received_unix': now.timestamp()}
+        for changes in ({'lat': float('nan')}, {'lon': None}, {'node_id': True},
+                        {'soil_moisture': 10001}, {'soil_moisture': True}, {'status_flags': '128'}):
+            with self.subTest(changes=changes):
+                self.assertEqual(generate_heatmap([{**row, **changes}], 'soil_moisture', now=now)['points'], [])
+
     def test_inverse_square_weights_and_exact_source(self):
         self.assertAlmostEqual(idw_value(0, 0, [(1, 0, 0), (2, 0, 100)]), 20)
         self.assertEqual(idw_value(1, 0, [(1, 0, 42), (2, 0, 100)]), 42)

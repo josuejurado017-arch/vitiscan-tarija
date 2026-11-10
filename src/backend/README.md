@@ -112,7 +112,8 @@ en la ingesta; el simulador conserva su propia lógica de detección.
   `failover`/`using_backup_parent`. Padres operativos/RSSI quedan `null` sin
   metadatos del coordinador: no se inventan desde un paquete agregado. El fallo
   conocido por el simulador se expresa `offline`; sin muestra durante 3600 s,
-  `stale`. Batería inválida se devuelve `null`.
+  y sin evidencia reciente del coordinador, `stale`. Metadatos de enlace caducados
+  vuelven a `null`, incluso si llegan muestras nuevas. Batería inválida se devuelve `null`.
 - `GET /api/v1/topology`: alias demo de estado.
 - `GET /api/v1/alerts/fire`: eventos, motivo, estado y latencia externa si existe.
 - `GET /api/v1/heatmap/{layer}?grid_m=11`: `soil_moisture`, `soil_temp`, `amb_temp`,
@@ -178,3 +179,9 @@ en vivo nueva e independiente. Opciones: `--periods 4 --live fire --db <ruta>`.
 Las pruebas usan bases temporales aisladas; no cambian `data/vitiscan_tarija.db`.
 Incluyen el SHA-256 del contrato, tramas reales, corrupción, rollback,
 concurrencia WAL, IDW, failover V-01 y flooding V-16 con latencia/escucha verificadas.
+
+Auditoría: dependencias fijadas y TestClient usa `httpx2` con Starlette actual.
+JSON debe ser UTF-8, sin propiedades duplicadas y profundidad <=64; timestamps
+RFC3339 de cadena, no Unix numérico. IDW rechaza entradas no finitas y dedup de
+alertas preserva el motivo radio/latencia y no retrocede `last_seen` por replay.
+Suite completa sin warnings: `python tools/run_tests.py`, también con `-O`.

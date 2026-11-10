@@ -17,6 +17,8 @@
   const COLORS = {normal: '#4adea3', backup: '#ffbd62', offline: '#8392a5', unknown: '#8392a5', fire: '#ff6174'};
   const STATUS = {normal: 'Normal', backup: 'Failover', offline: 'Caído', unknown: 'Sin confirmar', fire: 'Incendio'};
   const MESSAGE_TYPES = {1: 'BEACON', 2: 'CASCADE_DATA', 3: 'ACK', 255: 'FIRE_ALERT'};
+  const levelFor = id => id === 0 ? 0 : id >= 1 && id <= 20 ? Math.floor((id - 1) / 5) + 1 : -1;
+  const uncertainFailure = error => !Number.isInteger(error.status) || error.status >= 500 || error.status === 409;
 
   function nodeLabel(id) { return id === 0 ? 'GW-00' : `V-${String(id).padStart(2, '0')}`; }
 
@@ -46,6 +48,12 @@
     if (magic !== 0xa5 || !MESSAGE_TYPES[type] || count > 20 || bytes.length !== 6 + count * 12) {
       throw new Error('Cabecera o longitud incompatible con 6 B + 12 B × n.');
     }
+    const headerValid = levelFor(sender) === level && (type === 1
+      ? sender === 0 && parent === 255 && count === 0
+      : type === 2 ? sender !== 0 && count >= 1 && levelFor(parent) === level - 1
+        : type === 3 ? count === 0 && levelFor(parent) === level + 1
+          : sender !== 0 && parent === 255 && count === 1);
+    if (!headerValid) throw new Error('IDs, niveles o conteo incompatibles con el protocolo.');
     const view = new DataView(bytes.buffer);
     const readings = [];
     for (let index = 0; index < count; index++) {
@@ -55,11 +63,25 @@
         amb_humidity: view.getUint8(offset + 7), gas_smoke_ppm: view.getUint16(offset + 8, true),
         battery_pct: view.getUint8(offset + 10), status_flags: view.getUint8(offset + 11)});
     }
+    const seen = new Set();
+    for (const reading of readings) {
+      const channels = [reading.soil_temp_x10, reading.soil_moisture, reading.amb_temp_x10,
+        reading.amb_humidity, reading.gas_smoke_ppm, reading.battery_pct];
+      const limits = [[-550, 1250], [0, 10000], [-400, 800], [0, 100], [0, 1000], [0, 100]];
+      if (levelFor(reading.node_id) < 1 || seen.has(reading.node_id)
+          || channels.some((value, bit) => value < limits[bit][0] || value > limits[bit][1]
+            || Boolean(reading.status_flags & (1 << bit)) && value !== 0)
+          || !(reading.status_flags & 128) && !(reading.status_flags & 16)) {
+        throw new Error('Lectura fuera de rango, duplicada o con flags inválidos.');
+      }
+      seen.add(reading.node_id);
+    }
+    if (type === 255 && !(readings[0].status_flags & 64)) throw new Error('FIRE_ALERT sin bit fire_triggered.');
     return {bytes, magic, type, level, sender, parent, count, readings};
   }
 
   // Funciones puras para verificacion opcional de JS, sin Node requerido en ejecucion.
-  window.VitiScan = Object.freeze({parseFrame, parentFor, nodeVisualState, nodeLabel});
+  window.VitiScan = Object.freeze({parseFrame, parentFor, nodeVisualState, nodeLabel, uncertainFailure});
 
   const state = {config: null, token: '', busy: false, nodes: [], alerts: [], map: null,
     markers: new Map(), links: null, heat: null, heatmap: null, selected: 16, frames: [],
@@ -84,7 +106,12 @@
     const timeout = setTimeout(cancel, 15000);
     try {
       const response = await fetch(path, {...options, cache: 'no-store', credentials: 'same-origin', signal: controller.signal});
-      const data = await response.json().catch(() => ({}));
+      let data;
+      try { data = await response.json(); }
+      catch (error) {
+        if (response.ok) throw new Error('JSON del backend inválido; confirmación indeterminada.');
+        data = {};
+      }
       if (!response.ok) {
         const detail = typeof data.detail === 'string' ? data.detail : `Respuesta HTTP ${response.status}`;
         throw Object.assign(new Error(detail), {status: response.status});
@@ -168,6 +195,7 @@
   }
 
   function renderNetwork() {
+    const focusedId = document.activeElement?.closest('#node-table tr')?.dataset.nodeId;
     const fireNodes = new Set(state.alerts.filter(alert => alert.state === 'active').map(alert => alert.node_id));
     const activeCount = state.nodes.filter(node => ['online', 'sleeping'].includes(node.state)).length;
     $('active-count').replaceChildren(document.createTextNode(String(activeCount)), element('small', '/20'));
@@ -208,6 +236,7 @@
       if (node.using_backup_parent && positions.has(node.primary_parent)) addLink(node, positions.get(node.primary_parent), 'offline', true);
     }
     $('node-table').replaceChildren(table);
+    if (focusedId) $('node-table').querySelector(`[data-node-id="${focusedId}"]`)?.focus({preventScroll: true});
     renderDetail();
     if (!state.didFit && state.nodes.length && state.map) { fitNetwork(); state.didFit = true; }
   }
@@ -390,13 +419,17 @@
     if (state.busy) return;
     state.busy = true; state.generation++; state.refreshController?.abort(); updateButtons();
     const started = performance.now();
-    const key = state.pendingKeys.get(action) || crypto.randomUUID(); state.pendingKeys.set(action, key);
     actionMessage(`Ejecutando ${action}… esperando confirmación del Gateway.`);
     try {
+      const key = state.pendingKeys.get(action) || crypto.randomUUID(); state.pendingKeys.set(action, key);
       const headers = {'Content-Type': 'application/json'};
       if (state.token) headers.Authorization = `Bearer ${state.token}`;
       const result = await fetchJSON('/api/v1/sim/trigger', {method: 'POST', headers,
         body: JSON.stringify({action, idempotency_key: key, mode: 'simulation'})});
+      if (!['completed', 'partial'].includes(result.status) || !Array.isArray(result.packets)) {
+        throw new Error('Resultado incompleto; no se puede confirmar la simulación.');
+      }
+      result.packets.forEach(packet => parseFrame(packet.payload_hex));
       state.pendingKeys.delete(action); state.generation++;
       $('web-latency').textContent = `${Math.round(performance.now() - started)} ms`;
       if (Number.isFinite(result.latency_ms)) $('rf-latency').textContent = format(result.latency_ms, ' ms', 0);
@@ -414,10 +447,10 @@
       if (action === 'fire') { state.layer = 'gas_smoke_ppm'; $('heat-layer').value = state.layer; state.selected = 16; }
       await refresh(true);
     } catch (error) {
-      if (error.status) state.pendingKeys.delete(action);
+      if (!uncertainFailure(error)) state.pendingKeys.delete(action);
       actionMessage(error.status === 403 ? `${error.message} Habilita SIM_ACTIONS_ENABLED=true.`
         : error.status === 401 ? `${error.message} Recarga la página o revisa el token de operador.`
-          : `${error.message || 'No hay confirmación.'}${error.status ? '' : ' Estado incierto: reintenta el mismo botón con la misma identidad; no se mostrará éxito supuesto.'}`, true);
+          : `${error.message || 'No hay confirmación.'}${uncertainFailure(error) ? ' Estado incierto: se conserva la identidad; no se repetirá como una acción nueva.' : ''}`, true);
     } finally { state.busy = false; updateButtons(); }
   }
 
@@ -425,7 +458,12 @@
     document.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => runAction(button.dataset.action)));
     $('frame-select').addEventListener('change', event => showFrame(Number(event.target.value)));
     $('fit-network').addEventListener('click', fitNetwork);
-    $('heat-layer').addEventListener('change', () => { state.layer = $('heat-layer').value; state.generation++; refresh(true); });
+    $('heat-layer').addEventListener('change', () => {
+      state.layer = $('heat-layer').value; state.generation++;
+      renderHeatmap({layer: state.layer, points: [], values: [], source_count: 0, grid_m: 11});
+      $('source-count').textContent = 'Actualizando malla…'; $('map-probe').textContent = 'Esperando la capa seleccionada.';
+      refresh(true);
+    });
     $('heat-visible').addEventListener('change', () => { if (state.heatmap?.layer === state.layer) renderHeatmap(state.heatmap); });
     $('token-form').addEventListener('submit', event => {
       event.preventDefault(); state.token = $('operator-token').value.trim(); $('operator-token').value = '';

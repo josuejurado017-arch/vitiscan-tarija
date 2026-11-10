@@ -6,6 +6,7 @@ import hmac
 import ipaddress
 import json
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -19,7 +20,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, field_validator
 from starlette.concurrency import run_in_threadpool
 
 from src.backend.database import DEFAULT_DB_PATH, Database, IdentityConflict
@@ -59,6 +60,14 @@ class PacketMetadata(BaseModel):
     received_at: AwareDatetime
     latency_ms: float | None = Field(default=None, ge=0, le=120000, strict=True, allow_inf_nan=False)
 
+    @field_validator('received_at', mode='before')
+    @classmethod
+    def rfc3339_timestamp(cls, value):
+        if not isinstance(value, str) or not re.fullmatch(
+                r'\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})', value):
+            raise ValueError('received_at debe ser una cadena RFC3339 con zona, no Unix numerico.')
+        return value
+
 
 class HexPacket(PacketMetadata):
     payload_hex: str = Field(min_length=12, max_length=4096, strict=True)
@@ -92,9 +101,26 @@ async def limited_body(request: Request, maximum: int = 65536) -> bytes:
 
 
 def parse_model(model, body: bytes):
+    def unique_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('Propiedad JSON duplicada.')
+            result[key] = value
+        return result
+
     try:
-        document = json.loads(body)
-    except (ValueError, UnicodeDecodeError):
+        document = json.loads(body.decode('utf-8'), object_pairs_hook=unique_keys)
+        pending = [(document, 0)]
+        while pending:
+            value, depth = pending.pop()
+            if depth > 64:
+                raise ValueError('JSON demasiado anidado.')
+            if isinstance(value, dict):
+                pending.extend((child, depth + 1) for child in value.values())
+            elif isinstance(value, list):
+                pending.extend((child, depth + 1) for child in value)
+    except (ValueError, UnicodeDecodeError, RecursionError):
         raise HTTPException(400, 'JSON invalido.') from None
     try:
         return model.model_validate(document)
@@ -244,9 +270,13 @@ def create_app(db_path: str | Path | None = None, *, settings: Settings | None =
             'auth_mode': 'local_cookie' if is_local_dashboard(request) else 'bearer',
         }, headers={'Cache-Control': 'no-store'})
 
+    @application.get('/index.html', include_in_schema=False)
     @application.get('/', include_in_schema=False)
     def dashboard(request: Request):
-        response = FileResponse(FRONTEND_PATH / 'index.html', headers={'Cache-Control': 'no-store'})
+        response = FileResponse(FRONTEND_PATH / 'index.html', headers={
+            'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff',
+            'Content-Security-Policy': "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+        })
         if is_local_dashboard(request) and settings.sim_actions_enabled:
             response.set_cookie(DEMO_COOKIE, local_session, httponly=True, samesite='strict',
                                 secure=request.url.scheme == 'https', path='/api/v1/sim')

@@ -25,7 +25,7 @@ def utc_now() -> datetime:
 
 
 def utc_text(value: datetime) -> str:
-    if value.tzinfo is None or value.utcoffset() is None:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise ValueError('Timestamp debe incluir zona horaria UTC/RFC3339.')
     return value.astimezone(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
@@ -166,13 +166,15 @@ class Database:
             latency_ms = float(latency_ms)
         elif latency_source is not None:
             raise ValueError('Fuente de latencia sin latencia.')
-        if listen_window_ms is not None and (isinstance(listen_window_ms, bool) or listen_window_ms != 35):
+        if listen_window_ms is not None and (type(listen_window_ms) is not int or listen_window_ms != 35):
             raise ValueError('La ventana de escucha debe ser 35 ms.')
         if gateway_phase_ms is not None and (
                 isinstance(gateway_phase_ms, bool) or not isinstance(gateway_phase_ms, int)
-                or not 1200 <= gateway_phase_ms < 1420):
+                or not 1370 <= gateway_phase_ms <= 1405):
             raise ValueError('Fase de recepcion de alerta fuera de reserva.')
         kind = 'alert' if header.msg_type == MessageType.FIRE_ALERT else 'telemetry'
+        if kind != 'alert' and (listen_window_ms is not None or gateway_phase_ms is not None):
+            raise ValueError('Metadatos de rendezvous solo corresponden a FIRE_ALERT.')
         metadata = json.dumps([kind, received_text, latency_ms, latency_source,
                                listen_window_ms, gateway_phase_ms], separators=(',', ':'))
         accepted, duplicates = [], []
@@ -207,15 +209,27 @@ class Database:
                 if not is_critical:
                     continue
                 recent = connection.execute(
-                    '''SELECT id FROM fire_alerts WHERE node_id=? AND raw_reading=?
+                    '''SELECT * FROM fire_alerts WHERE node_id=? AND raw_reading=?
                        AND last_seen_unix BETWEEN ? AND ? ORDER BY last_seen_unix DESC LIMIT 1''',
-                    (reading.node_id, raw, received_unix - 120, received_unix),
+                    (reading.node_id, raw, received_unix - 120, received_unix + 120),
                 ).fetchone()
                 state = 'active' if received_unix >= utc_now().timestamp() - 120 else 'inactive'
                 if recent:
+                    newer = received_unix >= recent['last_seen_unix']
+                    earlier = received_unix < recent['first_seen_unix']
                     connection.execute(
-                        'UPDATE fire_alerts SET last_seen_at=?,last_seen_unix=?,state=? WHERE id=?',
-                        (received_text, received_unix, state, recent['id']),
+                        '''UPDATE fire_alerts SET first_seen_at=?,first_seen_unix=?,
+                             last_seen_at=?,last_seen_unix=?,state=?,reason=?,
+                             latency_ms=?,latency_source=?,listen_window_ms=?,gateway_phase_ms=? WHERE id=?''',
+                        (received_text if earlier else recent['first_seen_at'],
+                         min(received_unix, recent['first_seen_unix']),
+                         received_text if newer else recent['last_seen_at'],
+                         max(received_unix, recent['last_seen_unix']), state if newer else recent['state'],
+                         'radio_flag' if kind == 'alert' else recent['reason'],
+                         latency_ms if latency_ms is not None and (newer or recent['latency_ms'] is None) else recent['latency_ms'],
+                         latency_source if latency_ms is not None and (newer or recent['latency_ms'] is None) else recent['latency_source'],
+                         listen_window_ms if listen_window_ms is not None and newer else recent['listen_window_ms'],
+                         gateway_phase_ms if gateway_phase_ms is not None and newer else recent['gateway_phase_ms'], recent['id']),
                     )
                 else:
                     connection.execute(
@@ -233,7 +247,9 @@ class Database:
 
     def latest_readings(self, *, now: datetime | None = None) -> list[dict]:
         # Elegir ultima muestra ANTES de filtrar flags/edad: nunca backfill de canal invalido.
-        cutoff = (now or utc_now()).timestamp() + 5
+        moment = now or utc_now()
+        utc_text(moment)
+        cutoff = moment.timestamp() + 5
         with self.connection() as connection:
             rows = connection.execute(
                 '''WITH ranked AS (
@@ -256,8 +272,11 @@ class Database:
                 row['battery_pct'] = None
             if row['state'] == 'seed' and row['received_at']:
                 row['state'] = 'online'
-            if row['received_unix'] is not None and now - row['received_unix'] > 3600:
+            evidence = [value for value in (row['received_unix'], row['state_received_at']) if value is not None]
+            if evidence and now - max(evidence) > 3600:
                 row['state'] = 'stale'
+            if row['state_received_at'] is not None and now - row['state_received_at'] > 3600:
+                row['operational_parent_id'] = row['operational_backup_id'] = row['rssi_dbm'] = None
             row['last_seen_at'] = row.pop('received_at')
             row['failover'] = (row['operational_parent_id'] is not None
                                and row['operational_parent_id'] != row['primary_parent'])
@@ -291,7 +310,7 @@ class Database:
                 '''SELECT id,node_id,first_seen_at,last_seen_at,
                      CASE WHEN last_seen_unix < ? THEN 'inactive' ELSE state END AS state,
                      reason,critical,latency_ms,latency_source,listen_window_ms,gateway_phase_ms
-                   FROM fire_alerts ORDER BY (last_seen_unix >= ?) DESC,last_seen_unix DESC,id
+                   FROM fire_alerts ORDER BY (state='active' AND last_seen_unix >= ?) DESC,last_seen_unix DESC,id
                    LIMIT 100''', (utc_now().timestamp() - 120,) * 2,
             ).fetchall()
         return [dict(row) for row in rows]

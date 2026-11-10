@@ -22,11 +22,11 @@ HEADER_STRUCT = struct.Struct('<BBBBBB')
 READING_STRUCT = struct.Struct('<BhHhBHBB')
 MAGIC = 0xA5
 MAX_READINGS = CONTRACT['radio']['max_readings']
-MAX_PAYLOAD_BYTES = CONTRACT['radio']['max_payload_bytes']
+MAX_PAYLOAD_BYTES = CONTRACT['radio']['max_used_bytes']
 assert HEADER_STRUCT.size == 6
 assert READING_STRUCT.size == 12
 assert HEADER_STRUCT.size + MAX_READINGS * READING_STRUCT.size == 246
-assert 246 <= MAX_PAYLOAD_BYTES
+assert MAX_PAYLOAD_BYTES == 246 <= CONTRACT['radio']['max_payload_bytes']
 if (struct.calcsize(CONTRACT['radio']['python_formats']['header']) != 6
         or CONTRACT['radio']['python_formats']['reading'] != READING_STRUCT.format):
     raise RuntimeError('Layouts incompatibles con el contrato.')

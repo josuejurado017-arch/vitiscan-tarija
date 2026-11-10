@@ -64,6 +64,10 @@ async function main() {
         else operation.resolve(message.result);
       } else if (message.method === 'Runtime.exceptionThrown') {
         errors.push(message.params.exceptionDetails.exception?.description || message.params.exceptionDetails.text);
+      } else if (message.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(message.params.type)) {
+        errors.push(message.params.args.map(value => value.value || value.description || '').join(' '));
+      } else if (message.method === 'Log.entryAdded' && ['error', 'warning'].includes(message.params.entry.level)) {
+        errors.push(message.params.entry.text);
       }
     };
     const send = (method, params = {}) => new Promise((resolve, reject) => {
@@ -74,7 +78,7 @@ async function main() {
       if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || 'JS error');
       return result.result.value;
     };
-    await send('Page.enable'); await send('Runtime.enable');
+    await send('Page.enable'); await send('Runtime.enable'); await send('Log.enable');
     await send('Emulation.setDeviceMetricsOverride', {width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false});
     await send('Page.navigate', {url: origin});
     await waitFor(() => evaluate("document.querySelector('[data-action=cascade]')?.disabled === false && document.querySelectorAll('#node-table tr').length === 20"), 'dashboard listo');
@@ -83,7 +87,21 @@ async function main() {
       await evaluate(`document.querySelector('[data-action=${name}]').click()`);
       await waitFor(() => evaluate(`!document.querySelector('[data-action=${name}]').disabled && document.getElementById('action-status').textContent.includes(${JSON.stringify(expectedText)})`), name);
     };
+    // Una respuesta 503 tras commit no debe generar otra identidad en el reintento.
+    await evaluate(`window.__fetchOriginal=window.fetch; window.__retryKeys=[]; window.__retryRuns=[];
+      window.fetch=async (input, options={}) => {
+        const response=await window.__fetchOriginal(input, options);
+        if (String(input)==='/api/v1/sim/trigger') {
+          window.__retryKeys.push(JSON.parse(options.body).idempotency_key);
+          if(response.ok) window.__retryRuns.push((await response.clone().json()).run_id);
+          if(window.__retryKeys.length===1) return new Response(JSON.stringify({detail:'Confirmacion perdida despues de commit'}), {status:503,headers:{'Content-Type':'application/json'}});
+        }
+        return response;
+      }; document.querySelector('[data-action=cascade]').click();`);
+    await waitFor(() => evaluate("!document.querySelector('[data-action=cascade]').disabled && document.getElementById('action-status').textContent.includes('Estado incierto')"), '503 controlado sin exito supuesto');
     await action('cascade', '20/20');
+    assert.equal(await evaluate('window.__retryKeys[0]===window.__retryKeys[1] && window.__retryRuns[0]===window.__retryRuns[1]'), true);
+    await evaluate('window.fetch=window.__fetchOriginal');
     assert.equal(await evaluate("document.getElementById('active-count').textContent"), '20/20');
     assert.equal(await evaluate("document.querySelectorAll('#hex-viewer .header-byte').length"), 6);
     assert.equal(await evaluate("document.querySelectorAll('#hex-viewer .hex-byte:not(.header-byte)').length"), 48);
@@ -118,7 +136,7 @@ async function main() {
     for (const [layer, label] of [['amb_temp', 'Temperatura ambiente'], ['soil_temp', 'Temperatura de suelo'],
       ['thermal_risk', 'Riesgo térmico'], ['soil_moisture', 'Humedad de suelo']]) {
       await evaluate(`document.getElementById('heat-layer').value=${JSON.stringify(layer)}; document.getElementById('heat-layer').dispatchEvent(new Event('change'))`);
-      await waitFor(() => evaluate(`document.getElementById('heat-unit').textContent.includes(${JSON.stringify(label)})`), layer);
+      await waitFor(() => evaluate(`document.getElementById('heat-unit').textContent.includes(${JSON.stringify(label)}) && document.getElementById('source-count').textContent.includes('20/20')`), layer);
     }
     await send('Emulation.setDeviceMetricsOverride', {width: 390, height: 844, deviceScaleFactor: 1, mobile: true});
     await delay(300);

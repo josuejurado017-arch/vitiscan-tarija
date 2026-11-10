@@ -118,9 +118,13 @@ class CascadeNetwork:
         self.events.append(RadioEvent(start, start + duration, sender, target,
                                       recipients, payload, phase))
 
-    def sample(self, node_id: int) -> NodeReading:
-        if node_id not in self.nodes or node_id == 0:
+    def _validate_node(self, node_id: int, *, gateway: bool = False) -> None:
+        if (isinstance(node_id, bool) or not isinstance(node_id, int)
+                or node_id not in self.nodes or (node_id == 0 and not gateway)):
             raise ValueError('Nodo de campo desconocido.')
+
+    def sample(self, node_id: int) -> NodeReading:
+        self._validate_node(node_id)
         sample = NodeReading(**CONTRACT['samples']['raw'])
         return replace(sample, node_id=node_id, soil_temp_x10=215 + node_id - 1,
                        soil_moisture=4230 - 45 * (node_id - 1),
@@ -185,7 +189,8 @@ class CascadeNetwork:
         return ((timestamp + frame - 1) // frame) * frame
 
     def set_node_alive(self, node_id: int, alive: bool) -> None:
-        if node_id not in self.nodes or not isinstance(alive, bool):
+        self._validate_node(node_id, gateway=True)
+        if not isinstance(alive, bool):
             raise ValueError('ID o estado invalido.')
         self.nodes[node_id].alive = alive
 
@@ -309,6 +314,7 @@ class CascadeNetwork:
         cache[key] = AlertEntry(reading, timestamp)
 
     def trigger_fire(self, node_id: int, gas_smoke_ppm: int = 450) -> NodeReading:
+        self._validate_node(node_id)
         if not self.nodes[node_id].alive:
             raise ValueError('Un nodo caido no puede originar una alerta.')
         reading = replace(self.sample(node_id), gas_smoke_ppm=gas_smoke_ppm,
@@ -320,6 +326,10 @@ class CascadeNetwork:
 
     def _run_alert_windows(self, base: int) -> None:
         bounds = CONTRACT['fire_alerts']['bounds']
+        retain_ms = 120000
+        for key, received_at in list(self.gateway_alerts.items()):
+            if base - received_at >= retain_ms:
+                del self.gateway_alerts[key]
         for level in CONTRACT['tdma']['level_order']:
             start = base + self.timing['alert_start'] + self.timing['alert_round'] * (4 - level)
             senders = [node for node in self.nodes.values() if node.level == level and node.alive]
@@ -363,7 +373,15 @@ class CascadeNetwork:
     def validate_trace(self) -> None:
         """Verifica half-duplex, subslots completos y escucha de alerta de 35 ms."""
         occupied: dict[int, int] = {}
+        radio_free_at = -1
         for event in sorted(self.events, key=lambda event: event.start_ms):
+            header, _ = unpack_packet(event.payload)
+            if (header.sender_id != event.sender_id or header.parent_id != event.target_id
+                    or event.end_ms <= event.start_ms):
+                raise RuntimeError('Evento no coincide con su trama binaria o duracion.')
+            if event.start_ms < radio_free_at:
+                raise RuntimeError('Colision de emisiones en el canal compartido.')
+            radio_free_at = event.end_ms
             for node_id in (event.sender_id, *event.received_by):
                 if occupied.get(node_id, -1) > event.start_ms:
                     raise RuntimeError(f'Colision half-duplex en nodo {node_id}.')

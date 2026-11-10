@@ -1,0 +1,16 @@
+# Fuentes reproducibles en Windows, sin conversiones LF/CRLF al versionarlas.
+.gitattributes text eol=lf
+.gitignore text eol=lf
+*.py text eol=lf
+*.js text eol=lf
+*.cjs text eol=lf
+*.h text eol=lf
+*.cpp text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+*.ini text eol=lf
+*.txt text eol=lf
+
+# Los contratos congelados son bytes originales: nunca normalizar sus finales.
+.contracts/** -text
