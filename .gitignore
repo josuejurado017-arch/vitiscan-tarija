@@ -15,3 +15,10 @@ npm-debug.log
 .idea/
 .DS_Store
 Thumbs.db
+
+# Backend Python: artefactos de ejecucion y datos locales sinteticos
+__pycache__/
+*.py[cod]
+/data/*.db
+/data/*.db-wal
+/data/*.db-shm
