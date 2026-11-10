@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="no-referrer">
+  <title>VitiScan Tarija · Centro de Control</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous">
+  <link rel="stylesheet" href="/styles.css">
+  <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/leaflet.heat@0.2.0/dist/leaflet-heat.js"
+          integrity="sha256-65UqrlgGoRAnKfKRuriH3eeDrOhZgZo1SCenduc+SGo=" crossorigin="anonymous"></script>
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#demo-panel">Ir a controles de simulación</a>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">V</span><div><h1>VITISCAN <span>TARIJA</span></h1><p>Centro de control forestal y vitícola</p></div></div>
+    <div class="header-meta"><span class="pill demo-pill">DEMO · DATOS SINTÉTICOS</span><span id="connection" class="connection" role="status">Conectando…</span><time id="clock">--:--:--</time></div>
+  </header>
+  <section id="fire-banner" class="fire-banner" role="alert" hidden>
+    <span class="alarm-icon" aria-hidden="true">!</span><div><strong id="fire-title">ALERTA DE INCENDIO · 0xFF</strong><p id="fire-description"></p></div><span class="pill">SIMULACIÓN</span>
+  </section>
+  <main class="workspace">
+    <aside class="sidebar">
+      <section class="panel network-metrics" aria-labelledby="network-title">
+        <div class="section-heading"><h2 id="network-title">Red ESP-NOW</h2><span class="eyebrow">TDMA EN CASCADA</span></div>
+        <div class="metrics"><div><span>Superframe</span><strong>1500<small> ms</small></strong></div><div><span>Escucha alerta</span><strong>35<small> ms</small></strong></div><div><span>Nodos activos</span><strong id="active-count">--<small>/20</small></strong></div></div>
+        <div class="tdma-strip" aria-label="Cascada niveles 4 a 1, alertas y reserva"><span>N4</span><span>N3</span><span>N2</span><span>N1</span><span class="alert-slot">0xFF</span><span class="reserve-slot">·</span></div>
+        <p class="caption">Cascada 0–1200 ms · Alertas 1200–1420 ms · Sin timestamps en radio</p>
+      </section>
+      <section id="demo-panel" class="panel" aria-labelledby="demo-title">
+        <div class="section-heading"><h2 id="demo-title">Demo para el jurado</h2><span class="eyebrow" id="auth-state">CARGANDO</span></div>
+        <form id="token-form" hidden>
+          <label for="operator-token">Token de operador (solo en memoria)</label>
+          <div class="token-row"><input id="operator-token" type="password" autocomplete="off" placeholder="OPERATOR_TOKEN" spellcheck="false"><button type="submit">Conectar</button></div>
+        </form>
+        <div class="action-list">
+          <button class="action" data-action="cascade" disabled><span class="action-number">01</span><span><strong>Ejecutar ciclo nominal</strong><small>20 nodos → Gateway · N4 a N1</small></span><span aria-hidden="true">↗</span></button>
+          <button class="action warning-action" data-action="failover" disabled><span class="action-number">02</span><span><strong>Simular caída de V-01</strong><small>V-06 conmuta su padre a V-02</small></span><span aria-hidden="true">⇄</span></button>
+          <button class="action danger-action" data-action="fire" disabled><span class="action-number">03</span><span><strong>Incendio en perímetro V-16</strong><small>0xFF · 450 ppm sintéticos · Flooding</small></span><span aria-hidden="true">△</span></button>
+          <button class="action" data-action="restore" disabled><span class="action-number">04</span><span><strong>Restaurar red demo</strong><small>20/20 · Cerrar alertas demo sin borrar historial</small></span><span aria-hidden="true">↻</span></button>
+        </div>
+        <p id="action-status" class="status-message" role="status" aria-live="polite">Esperando configuración del servidor.</p>
+        <div class="latency-row"><span>Respuesta web <strong id="web-latency">—</strong></span><span>Latencia virtual RF <strong id="rf-latency">—</strong></span></div>
+      </section>
+      <section class="panel node-panel" aria-labelledby="node-title">
+        <div class="section-heading"><h2 id="node-title">Telemetría por nodo</h2><span class="eyebrow">22 m / RAMA</span></div>
+        <div class="node-table-wrap"><table><caption class="sr-only">Estado de los veinte nodos y sus padres operativos</caption><thead><tr><th>Nodo / nivel</th><th>Estado</th><th>Padre</th><th>Batería</th></tr></thead><tbody id="node-table"></tbody></table></div>
+        <div id="node-detail" class="node-detail">Selecciona un nodo en el mapa o en la tabla.</div>
+      </section>
+    </aside>
+    <div class="main-column">
+      <section class="map-panel" aria-label="Mapa GIS del viñedo">
+        <div class="map-toolbar"><div><h2>Valle Central de Tarija</h2><p>−21.6485, −64.6342 · Topología sintética WGS84</p></div><button id="fit-network" class="quiet-button" type="button">Centrar red</button></div>
+        <div class="layer-controls"><label for="heat-layer">Capa IDW</label><select id="heat-layer"><option value="soil_moisture">Humedad de suelo · %</option><option value="amb_temp">Temperatura ambiente · °C</option><option value="soil_temp">Temperatura de suelo · °C</option><option value="gas_smoke_ppm">Humo / gas · ppm sintéticos</option><option value="thermal_risk">Riesgo térmico · índice demo</option></select><label class="toggle"><input id="heat-visible" type="checkbox" checked> Ver calor</label><span id="source-count" class="caption">— fuentes · IDW p=2</span></div>
+        <div class="map-container"><div id="map" aria-label="Gateway y nodos de los niveles uno a cuatro"></div><p id="map-warning" class="map-warning" role="status" hidden></p><div class="map-badge">GW-00 <span>·</span> 5 RAMAS <span>·</span> 4 NIVELES</div><div class="heat-legend"><strong id="heat-unit">Humedad de suelo · %</strong><div id="heat-gradient" class="gradient"></div><div class="legend-extents"><span id="heat-low">0 %</span><span id="heat-high">100 %</span></div></div></div>
+        <div class="map-footer"><div class="node-legend"><span><i class="dot normal"></i>Normal</span><span><i class="dot backup"></i>Failover</span><span><i class="dot offline"></i>Caído / sin datos</span><span><i class="dot fire"></i>Incendio</span></div><span id="map-probe" class="caption">Mueve el cursor para consultar una celda IDW.</span></div>
+      </section>
+      <section class="panel hex-panel" aria-labelledby="hex-title">
+        <div class="section-heading"><h2 id="hex-title">Trama en vivo <span class="eyebrow">LITTLE-ENDIAN</span></h2><span id="packet-size" class="pill">6 B + 12 B × n</span></div>
+        <label class="sr-only" for="frame-select">Seleccionar trama recibida</label><select id="frame-select" disabled><option>Ejecuta una simulación para recibir bytes reales</option></select>
+        <div class="hex-labels"><span><i class="byte-key header-key"></i>Cabecera · 6 bytes</span><span><i class="byte-key reading-key"></i>Lectura · 12 bytes por nodo</span></div>
+        <div id="hex-viewer" class="hex-viewer" aria-live="polite"><p class="caption">Sin tramas aún. No se muestran paquetes inventados.</p></div>
+        <p id="frame-description" class="caption">Magic · Tipo · Nivel · Emisor · Padre · Cantidad. Máximo 20 lecturas / 246 B.</p>
+      </section>
+    </div>
+  </main>
+  <footer class="safety-footer"><strong>PROTOTIPO NO CERTIFICADO.</strong> MQ-2 sintético, sin calibración física. El tiempo de interfaz no equivale a latencia RF ni garantiza detección. Restaurar la demo no significa extinguir un incendio real.</footer>
+  <noscript><p class="map-warning">Activa JavaScript para usar el mapa y las simulaciones.</p></noscript>
+</body>
+</html>

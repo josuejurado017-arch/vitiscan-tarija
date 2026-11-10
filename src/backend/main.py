@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import os
+import secrets
 import sqlite3
 import threading
 from contextlib import asynccontextmanager
@@ -15,13 +17,18 @@ from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from src.backend.database import DEFAULT_DB_PATH, Database, IdentityConflict
 from src.backend.idw_interpolation import LAYERS, generate_heatmap
 from src.backend.seed_tarija import run_live_simulation
+from src.simulator.binary_protocol import CONTRACT
+
+FRONTEND_PATH = Path(__file__).resolve().parents[1] / 'frontend'
+DEMO_COOKIE = 'vitiscan_local_demo'
 
 
 @dataclass(frozen=True)
@@ -31,6 +38,7 @@ class Settings:
     sim_actions_enabled: bool = False
     cors_origins: tuple[str, ...] = ()
     app_mode: str = 'simulation'
+    dashboard_local_demo: bool = False
 
     @classmethod
     def from_env(cls):
@@ -39,7 +47,8 @@ class Settings:
                    sim_actions_enabled=os.environ.get('SIM_ACTIONS_ENABLED', '').lower() == 'true',
                    cors_origins=tuple(origin.strip() for origin in os.environ.get('CORS_ALLOWED_ORIGINS', '').split(',')
                                       if origin.strip()),
-                   app_mode=os.environ.get('APP_MODE', 'simulation'))
+                   app_mode=os.environ.get('APP_MODE', 'simulation'),
+                   dashboard_local_demo=os.environ.get('DASHBOARD_LOCAL_DEMO', '').lower() == 'true')
 
 
 class PacketMetadata(BaseModel):
@@ -57,7 +66,7 @@ class HexPacket(PacketMetadata):
 
 class SimulationCommand(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    action: Literal['cascade', 'failover', 'fire']
+    action: Literal['cascade', 'failover', 'fire', 'restore']
     idempotency_key: UUID
     mode: Literal['simulation'] = 'simulation'
 
@@ -101,6 +110,16 @@ def create_app(db_path: str | Path | None = None, *, settings: Settings | None =
         raise ValueError('CORS requiere origins explicitos, sin wildcard.')
     database = Database(db_path or os.environ.get('VITISCAN_DB_PATH', DEFAULT_DB_PATH))
     simulation_lock = threading.Lock()
+    local_session = secrets.token_urlsafe(32)
+
+    def is_local_dashboard(request: Request) -> bool:
+        # Host + peer checks: no trust in X-Forwarded-For/Host for this capability.
+        try:
+            local_peer = request.client is not None and ipaddress.ip_address(request.client.host).is_loopback
+        except ValueError:
+            local_peer = False
+        return bool(settings.dashboard_local_demo and local_peer
+                    and request.url.hostname in ('127.0.0.1', 'localhost', '::1'))
 
     @asynccontextmanager
     async def lifespan(application):
@@ -200,11 +219,41 @@ def create_app(db_path: str | Path | None = None, *, settings: Settings | None =
     async def trigger(request: Request):
         if not settings.sim_actions_enabled:
             raise HTTPException(403, 'SIM_ACTIONS_ENABLED esta deshabilitado.')
-        authorize(request, settings.operator_token)
+        if request.headers.get('authorization'):
+            authorize(request, settings.operator_token)
+        elif is_local_dashboard(request):
+            origin = request.headers.get('origin')
+            if origin != str(request.base_url).rstrip('/'):
+                raise HTTPException(403, 'La sesion demo requiere Origin del mismo servidor local.')
+            cookie = request.cookies.get(DEMO_COOKIE, '')
+            if not hmac.compare_digest(cookie.encode('utf-8'), local_session.encode('utf-8')):
+                raise HTTPException(401, 'Abrir el dashboard local para iniciar la sesion demo.')
+        else:
+            authorize(request, settings.operator_token)
         if request.headers.get('content-type', '').split(';')[0].strip().lower() != 'application/json':
             raise HTTPException(415, 'Usar application/json.')
         command = parse_model(SimulationCommand, await limited_body(request))
         return await run_in_threadpool(trigger_sync, command)
+
+    @application.get('/api/v1/dashboard/config')
+    def dashboard_config(request: Request):
+        return JSONResponse({
+            'mode': 'simulation', 'gateway': CONTRACT['topology']['gateway'],
+            'superframe_ms': 1500, 'listen_window_ms': 35, 'alert_poll_ms': 500,
+            'actions_enabled': settings.sim_actions_enabled,
+            'auth_mode': 'local_cookie' if is_local_dashboard(request) else 'bearer',
+        }, headers={'Cache-Control': 'no-store'})
+
+    @application.get('/', include_in_schema=False)
+    def dashboard(request: Request):
+        response = FileResponse(FRONTEND_PATH / 'index.html', headers={'Cache-Control': 'no-store'})
+        if is_local_dashboard(request) and settings.sim_actions_enabled:
+            response.set_cookie(DEMO_COOKIE, local_session, httponly=True, samesite='strict',
+                                secure=request.url.scheme == 'https', path='/api/v1/sim')
+        return response
+
+    # Last: static files never mask /api/* routes, /docs or /openapi.json.
+    application.mount('/', StaticFiles(directory=FRONTEND_PATH), name='frontend')
 
     return application
 

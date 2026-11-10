@@ -6,6 +6,17 @@ de seguridad certificada. No utiliza radio, servicios externos ni datos reales.
 
 ## Arranque desde `D:\desarrollo`
 
+Dashboard GIS y demo local sin copiar tokens:
+
+```powershell
+.\venv\Scripts\python.exe -m src.backend.run_demo
+```
+
+Sirve `src/frontend/` en `/`, abre `http://127.0.0.1:8000` y habilita solo para
+loopback una sesión HttpOnly de acciones demo. Perfil opt-in, sin proxy headers,
+sin quitar autenticación de ingesta ni cambiar el perfil normal por defecto.
+Guía de UI, sesión local, tiempos y comandos manuales: `src/frontend/README.md`.
+
 Las dependencias ya están instaladas en `venv`. Para otro entorno:
 
 ```powershell
@@ -132,6 +143,8 @@ Con Bearer de operador y acciones habilitadas:
   recuperación 19/20. Solo V-01 falta; estado final `partial`.
 - `fire`: incendio de 450 ppm sintéticos en V-16, flooding real del simulador,
   ventanas de 35 ms fuera de `[0,1200)` y entrega deduplicada en Gateway.
+- `restore`: nueva cascada 20/20 y marca eventos demo como `inactive`, sin borrar
+  historial. No afirma extinción física; las acciones siguen siendo simulation-only.
 
 Escenarios **independientes**, no mantienen caídas entre llamadas. Se ingieren
 solo `RadioEvent.payload` realmente recibidos por nodo 0, no se simula entrega
@@ -141,6 +154,12 @@ Usar un único worker para la demo; lock por proceso. Claves de idempotencia
 persistentes devuelven el mismo resultado; otra acción con la misma clave da 409.
 Clave en curso/interrumpida da 409: revisar estado parcial y usar una nueva.
 Las claves completadas se conservan, sin purga automática en esta fase.
+
+La recepción UTC de cada trama del puente se marca al reproducirla en Gateway;
+la fase/latencia mantiene el reloj virtual externo. Esto conserva el orden entre
+escenarios ejecutados sin espera real, sin fechar una alerta nueva antes de una
+cascada anterior. El dashboard consulta `/api/v1/dashboard/config` para obtener
+Gateway, temporización y modo de autenticación; esa respuesta no contiene secretos.
 
 ## Seed y pruebas
 

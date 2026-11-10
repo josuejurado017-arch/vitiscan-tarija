@@ -63,10 +63,12 @@ def ingest_gateway_events(database: Database, network: CascadeNetwork, events: l
                           *, cycle_id: str, alert_started_ms: int | None = None) -> list[dict]:
     """Ingiere solo bytes de RadioEvent que efectivamente recibio el nodo 0.
 
-    El coordinador mapea el reloj virtual a UTC al finalizar. Deduplica replicas
-    en Gateway antes de HTTP/SQLite, sin fabricar una trama agregada del resultado.
+    UTC marca cada recepcion al reproducirla en el Gateway simulado. No se resta
+    la duracion virtual del escenario al reloj de pared: eso podria hacer una
+    alerta nueva mas antigua que la cascada anterior ejecutada sin esperar.
+    Latencia/fase RF conservan el reloj virtual externo. Deduplica replicas sin
+    fabricar una trama agregada del resultado.
     """
-    finished_at = utc_now()
     seen, results = set(), []
     for event in events:
         if 0 not in event.received_by or event.kind not in (MessageType.CASCADE_DATA, MessageType.FIRE_ALERT):
@@ -87,7 +89,7 @@ def ingest_gateway_events(database: Database, network: CascadeNetwork, events: l
                         'gateway_phase_ms': event.end_ms % network.timing['superframe']}
         result = database.ingest(
             event.payload, cycle_id=cycle_id,
-            received_at=finished_at - timedelta(milliseconds=network.clock_ms - event.end_ms),
+            received_at=utc_now(),
             **metadata,
         )
         results.append({**result, 'payload_hex': event.payload.hex(' '),
@@ -97,8 +99,8 @@ def ingest_gateway_events(database: Database, network: CascadeNetwork, events: l
 
 def run_live_simulation(database: Database, action: str = 'cascade') -> dict:
     """Escenarios independientes: no acumulan nodos caidos entre llamadas."""
-    if action not in ('cascade', 'failover', 'fire'):
-        raise ValueError('Accion debe ser cascade, failover o fire.')
+    if action not in ('cascade', 'failover', 'fire', 'restore'):
+        raise ValueError('Accion debe ser cascade, failover, fire o restore.')
     database.initialize()
     network = CascadeNetwork()
     network.discover()
@@ -137,12 +139,19 @@ def run_live_simulation(database: Database, action: str = 'cascade') -> dict:
             cascade_stage()
             result = cascade_stage()
         reading_count, missing = len(result.readings), result.missing_node_ids
+    closed_demo_alerts = 0
+    if action == 'restore':
+        # Solo esta base sintetica. Conservar historial; no afirmar extincion real.
+        with database.connection(write=True) as connection:
+            closed_demo_alerts = connection.execute(
+                "UPDATE fire_alerts SET state='inactive' WHERE state='active'"
+            ).rowcount
     network.validate_trace()
     return {'run_id': str(uuid4()), 'mode': 'simulation', 'action': action,
             'status': 'partial' if missing else 'completed', 'reading_count': reading_count,
             'missing_node_ids': missing, 'failovers': failovers, 'stages': stages,
             'packets': packets, 'latency_ms': latency, 'listen_window_ms': 35,
-            'superframe_ms': 1500, 'trace_validated': True}
+            'superframe_ms': 1500, 'trace_validated': True, 'closed_demo_alerts': closed_demo_alerts}
 
 
 def main() -> None:
