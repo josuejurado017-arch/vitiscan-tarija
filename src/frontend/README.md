@@ -74,6 +74,49 @@ no finge que existe un mapa interactivo sin la librería.
 
 ## Cuatro escenarios
 
+### Maqueta Física / Gemelo Digital
+
+Panel integrado debajo del mapa GIS, sin librerías adicionales. El tablero SVG
+mantiene las posiciones locales de los 20 nodos y las distancias relativas:
+Gateway N0 en el centro, hileras vitícolas en N1–N3, perímetro forestal N4,
+sensor V-16 y poste repetidor V-01 con interruptor representado. Referencia
+**1:200**: 22 m reales equivalen a 11 cm en una maqueta; el tamaño en pantalla
+no es una regla física. Selección por clic, Enter o espacio, y detalle compartido
+con tabla/mapa. LEDs animados verde/ámbar/rojo; gris es desconocido y apagado es
+sin energía. Se respeta movimiento reducido y el panel se adapta a móvil.
+
+- **Regar Suelo en Maqueta**: elegir rama 1–5; aumenta hasta 20 puntos porcentuales
+  por pulsación (máximo 100%) en sus nodos válidos de N1–N3, nunca en el bosque.
+  Muestra humedad **recibida** y humedad **local** separadas, ilumina el sector y
+  selecciona la capa de humedad. El IDW local usa p=2 en metros, coincidencia
+  exacta a 1 mm y 289 celdas a 11 m; mantiene el raster Canvas y consulta de celda.
+  Excluye canales inválidos, nodos apagados/desconocidos, lecturas >1 h y fechas
+  futuras >5 s. Sin fuentes no inventa un cero.
+- El riego es una **previsualización exclusiva del navegador**, marcada
+  `RIEGO LOCAL`. No envía ingesta, no crea paquetes HEX, no cambia SQLite ni los
+  endpoints IDW del backend. Se conserva ante polling y cambios de capa mientras
+  la página permanezca abierta; **Limpiar riego local**, restaurar o recargar
+  retiran los valores locales. No es un actuador de riego.
+- **Cortar Switch Poste V-01** reutiliza `failover`: solo tras confirmación y
+  actualización se apaga V-01, se enciende ámbar y se dibuja V-06 → V-02.
+- **Acercar Humo a Sensor MQ-2 (V-16)** reutiliza `fire`: rojo únicamente tras
+  `0xFF`/alerta confirmada, capa de gas actualizada y escucha RF virtual de 35 ms.
+  La animación no constituye una medición de tiempo RF.
+
+Se mantienen las mismas sesiones/tokens, bloqueo de acciones e idempotencia de
+los controles originales. Los escenarios del servidor siguen siendo
+**independientes**: humo no conserva artificialmente un switch cortado si el
+backend comunica una topología nominal. Si se pierde conexión se conserva el
+último estado con aviso, no se finge confirmación. El panel y sus controles
+funcionan incluso si Leaflet/CDN no carga; el GIS muestra su aviso habitual.
+
+Las pruebas añaden validación del riego, saturación, exclusión de fuentes,
+interpolación exacta, LEDs y escala; Chrome verifica controles físicos, polling
+sin perder la previsualización, backend/HEX intactos tras riego, teclado, movimiento
+reducido y móvil. El contrato congelado conserva su SHA-256.
+
+### Escenarios confirmados del backend
+
 Los botones envían JSON a `POST /api/v1/sim/trigger` con `action`, UUID de
 `idempotency_key` y `mode=simulation`. No hay JSON por radio.
 

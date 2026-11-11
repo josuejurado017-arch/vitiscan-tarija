@@ -61,6 +61,49 @@
         <div class="map-container"><div id="map" aria-label="Gateway y nodos de los niveles uno a cuatro"></div><p id="map-warning" class="map-warning" role="status" hidden></p><div class="map-badge">GW-00 <span>·</span> 5 RAMAS <span>·</span> 4 NIVELES</div><div class="heat-legend"><strong id="heat-unit">Humedad de suelo · %</strong><div id="heat-gradient" class="gradient"></div><div class="legend-extents"><span id="heat-low">0 %</span><span id="heat-high">100 %</span></div></div></div>
         <div class="map-footer"><div class="node-legend"><span><i class="dot normal"></i>Normal</span><span><i class="dot backup"></i>Failover</span><span><i class="dot offline"></i>Caído / sin datos</span><span><i class="dot fire"></i>Incendio</span></div><span id="map-probe" class="caption">Mueve el cursor para consultar una celda IDW.</span></div>
       </section>
+      <section id="physical-twin" class="panel twin-panel" aria-labelledby="twin-title">
+        <div class="section-heading"><div><h2 id="twin-title">Maqueta Física / Gemelo Digital</h2><p class="caption">Tablero virtual · Escala de referencia 1:200 · Posiciones sintéticas del viñedo</p></div><span id="twin-sync" class="pill">SIN CONFIRMAR</span></div>
+        <div class="twin-instruments" aria-label="Indicadores del tablero">
+          <span><i id="twin-gateway-led" class="twin-led unknown" role="img" aria-label="Gateway sin confirmar"></i> Gateway N0</span>
+          <span><i id="twin-failover-led" class="twin-led offline" role="img" aria-label="Failover sin confirmar"></i> Respaldo</span>
+          <span><i id="twin-fire-led" class="twin-led offline" role="img" aria-label="Alarma sin confirmar"></i> Alarma 0xFF</span>
+          <span id="twin-switch-state" class="caption">Poste V-01: sin confirmar</span>
+        </div>
+        <svg id="twin-board" class="twin-board" viewBox="0 0 800 590" role="group" aria-labelledby="twin-board-title twin-board-description">
+          <title id="twin-board-title">Tablero a escala del viñedo con veinte nodos y Gateway</title>
+          <desc id="twin-board-description">Hileras en los niveles uno a tres, bosque en nivel cuatro y poste V-01. Selecciona un nodo con clic, Enter o espacio. Los LEDs y enlaces representan el último estado confirmado; el riego es una previsualización local.</desc>
+          <defs>
+            <pattern id="twin-vines" width="26" height="28" patternUnits="userSpaceOnUse"><path d="M13 0v28M13 10l-7-5m7 14 7-5" fill="none" stroke="#36705a" stroke-width="2"/></pattern>
+            <pattern id="twin-trees" width="32" height="34" patternUnits="userSpaceOnUse"><path d="M16 3 5 21h7v8h8v-8h7Z" fill="#294b3d" stroke="#498366" stroke-width="1"/></pattern>
+            <marker id="twin-route-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="context-stroke"/></marker>
+          </defs>
+          <rect x="10" y="10" width="780" height="570" rx="18" class="twin-base"/>
+          <circle cx="400" cy="290" r="220" fill="none" stroke="url(#twin-trees)" stroke-width="62"/>
+          <circle cx="400" cy="290" r="182" class="twin-soil"/>
+          <circle cx="400" cy="290" r="178" fill="url(#twin-vines)"/>
+          <g id="twin-water-patches" aria-hidden="true"></g>
+          <g class="twin-level-rings" aria-hidden="true"><circle cx="400" cy="290" r="55"/><circle cx="400" cy="290" r="110"/><circle cx="400" cy="290" r="165"/><circle cx="400" cy="290" r="220"/></g>
+          <text x="34" y="45" class="twin-board-heading">VALLE CENTRAL DE TARIJA</text>
+          <text x="34" y="67" class="twin-board-caption">5 ramas · 4 niveles · 22 m entre niveles de una rama</text>
+          <text x="400" y="34" text-anchor="middle" class="twin-zone-label">PERÍMETRO FORESTAL · N4</text>
+          <text x="400" y="122" text-anchor="middle" class="twin-zone-label">HILERAS DE VIÑEDO · N1–N3</text>
+          <g id="twin-links" aria-label="Rutas operativas confirmadas"></g>
+          <g class="twin-gateway" transform="translate(400 290)"><rect x="-19" y="-17" width="38" height="34" rx="8"/><path d="M-8-23Q0-32 8-23M-13-29Q0-43 13-29"/><text y="5" text-anchor="middle">GW</text><text y="37" text-anchor="middle" class="twin-node-label">N0</text></g>
+          <g id="twin-nodes" aria-label="Nodos seleccionables y sus LEDs"></g>
+          <g class="twin-scale" transform="translate(35 540)"><path d="M0-5v10m0-5h55m0-5v10"/><text x="0" y="24">22 m reales = 11 cm en maqueta 1:200 · pantalla no es regla física</text></g>
+          <text x="765" y="545" text-anchor="end" class="twin-board-caption">LED: último estado confirmado</text>
+        </svg>
+        <div class="twin-legend"><span><i class="twin-led normal" aria-hidden="true"></i>Verde · operativo</span><span><i class="twin-led backup" aria-hidden="true"></i>Ámbar · respaldo activo</span><span><i class="twin-led fire" aria-hidden="true"></i>Rojo · alerta confirmada</span><span><i class="twin-led offline" aria-hidden="true"></i>Apagado · sin energía</span></div>
+        <p id="twin-node-detail" class="twin-readout">Esperando telemetría. No se inventan estados de los LEDs.</p>
+        <div class="twin-sector-row"><label for="twin-sector">Sector de riego</label><select id="twin-sector"><option value="1">Rama 1 · N1–N3</option><option value="2">Rama 2 · N1–N3</option><option value="3">Rama 3 · N1–N3</option><option value="4">Rama 4 · N1–N3</option><option value="5">Rama 5 · N1–N3</option></select><button id="twin-clear-water" class="quiet-button" type="button" disabled>Limpiar riego local</button></div>
+        <div class="twin-controls">
+          <button id="twin-water" class="action" type="button" disabled><span class="twin-control-icon" aria-hidden="true">≈</span><span><strong>Regar Suelo en Maqueta</strong><small>Hasta +20 puntos de humedad · IDW local</small></span></button>
+          <button id="twin-cut-switch" class="action warning-action" type="button" data-action="failover" aria-pressed="false" disabled><span class="twin-switch" aria-hidden="true"><i></i></span><span><strong>Cortar Switch Poste V-01</strong><small>LED apagado · V-06 → V-02 por respaldo</small></span></button>
+          <button id="twin-smoke" class="action danger-action" type="button" data-action="fire" disabled><span class="twin-control-icon" aria-hidden="true">♨</span><span><strong>Acercar Humo a Sensor MQ-2 (V-16)</strong><small>450 ppm sintéticos · 35 ms · FIRE_ALERT 0xFF</small></span></button>
+        </div>
+        <p id="twin-irrigation-status" class="caption">Riego solo en este navegador: no envía lecturas ni modifica el historial. Switch y humo usan los escenarios independientes del backend.</p>
+        <p id="twin-action-status" class="status-message" role="status" aria-live="polite">Esperando configuración del servidor.</p>
+      </section>
       <section class="panel hex-panel" aria-labelledby="hex-title">
         <div class="section-heading"><h2 id="hex-title">Trama en vivo <span class="eyebrow">LITTLE-ENDIAN</span></h2><span id="packet-size" class="pill">6 B + 12 B × n</span></div>
         <label class="sr-only" for="frame-select">Seleccionar trama recibida</label><select id="frame-select" disabled><option>Ejecuta una simulación para recibir bytes reales</option></select>

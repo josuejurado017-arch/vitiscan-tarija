@@ -23,11 +23,13 @@ class AssetParser(HTMLParser):
         super().__init__()
         self.assets = []
         self.ids = set()
+        self.id_list = []
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if 'id' in attrs:
             self.ids.add(attrs['id'])
+            self.id_list.append(attrs['id'])
         if tag == 'script' and 'src' in attrs:
             self.assets.append(attrs['src'])
         if tag == 'link' and attrs.get('rel') == 'stylesheet':
@@ -84,6 +86,44 @@ class FrontendIntegrationTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, asset)
             self.assertIn('javascript' if asset.endswith('.js') else 'text/css', response.headers['content-type'])
         self.assertEqual(self.client.get('/index.html').status_code, 200)
+
+    def test_physical_twin_is_accessible_and_has_unique_controls(self):
+        page = self.client.get('/').text
+        parser = AssetParser()
+        parser.feed(page)
+        self.assertEqual(len(parser.id_list), len(set(parser.id_list)))
+        self.assertTrue({'physical-twin', 'twin-board', 'twin-title', 'twin-water',
+                         'twin-cut-switch', 'twin-smoke', 'twin-nodes', 'twin-links',
+                         'twin-sector', 'twin-clear-water', 'twin-action-status'} <= parser.ids)
+        for text in ('Maqueta Física / Gemelo Digital', 'Regar Suelo en Maqueta',
+                     'Cortar Switch Poste V-01', 'Acercar Humo a Sensor MQ-2 (V-16)',
+                     '1:200', '35 ms', '0xFF', 'Riego solo en este navegador'):
+            self.assertIn(text, page)
+        self.assertIn('aria-labelledby="twin-board-title twin-board-description"', page)
+
+    def test_physical_twin_reuses_confirmed_actions_without_new_endpoints(self):
+        self.client.get('/')
+        failover = self.trigger('failover')
+        self.assertEqual(failover.status_code, 200)
+        nodes = self.client.get('/api/v1/nodes/status').json()['nodes']
+        self.assertEqual(nodes[0]['state'], 'offline')
+        self.assertEqual(nodes[5]['operational_parent_id'], 2)
+        self.assertTrue(nodes[5]['failover'])
+        fire = self.trigger('fire')
+        self.assertEqual(fire.status_code, 200)
+        self.assertTrue(any(packet['msg_type'] == 255 for packet in fire.json()['packets']))
+        self.assertTrue(any(alert['state'] == 'active' for alert in self.client.get('/api/v1/alerts/fire').json()['alerts']))
+
+    def test_twin_assets_preserve_local_preview_and_motion_safety(self):
+        javascript = self.client.get('/app.js').text
+        styles = self.client.get('/styles.css').text
+        self.assertIn('irrigationHeatmap', javascript)
+        self.assertIn('RIEGO LOCAL', javascript)
+        self.assertIn('createElementNS', javascript)
+        self.assertNotIn('localStorage', javascript)
+        self.assertIn('prefers-reduced-motion:reduce', styles)
+        self.assertIn('.twin-node.offline .twin-node-led', styles)
+        self.assertIn('.twin-route.backup', styles)
 
     def test_api_docs_and_unknown_routes_not_shadowed_by_static_mount(self):
         self.assertEqual(len(self.client.get('/api/v1/nodes/status').json()['nodes']), 20)

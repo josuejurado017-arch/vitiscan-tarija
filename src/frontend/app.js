@@ -80,13 +80,90 @@
     return {bytes, magic, type, level, sender, parent, count, readings};
   }
 
+  // El riego es una previsualizacion LOCAL, nunca una lectura ni una trama RF.
+  function moistureSource(node, now = Date.now()) {
+    const received = Date.parse(node.last_seen_at);
+    if (!Number.isInteger(node.node_id) || node.node_id < 1 || node.node_id > 20
+        || !['online', 'sleeping'].includes(node.state)
+        || !Number.isInteger(node.status_flags) || node.status_flags < 0 || node.status_flags > 255
+        || node.status_flags & 2 || !Number.isInteger(node.soil_moisture)
+        || node.soil_moisture < 0 || node.soil_moisture > 10000
+        || !Number.isFinite(received) || now - received > 3600000 || received - now > 5000
+        || !Number.isFinite(node.lat) || !Number.isFinite(node.lon)
+        || Math.abs(node.lat) > 90 || Math.abs(node.lon) > 180) return null;
+    return node.soil_moisture / 100;
+  }
+
+  function irrigateSector(nodes, previous, branch, now = Date.now()) {
+    if (!Number.isInteger(branch) || branch < 1 || branch > 5) throw new Error('Sector de riego inválido.');
+    const result = new Map(previous);
+    for (const node of nodes) {
+      const baseline = moistureSource(node, now);
+      if (node.branch !== branch || node.level < 1 || node.level > 3 || baseline === null) continue;
+      const current = result.get(node.node_id) ?? baseline;
+      if (!Number.isFinite(current) || current < 0 || current > 100) throw new Error('Humedad local inválida.');
+      result.set(node.node_id, Math.min(100, current + 20));
+    }
+    return result;
+  }
+
+  function irrigationHeatmap(nodes, irrigation, gateway, now = Date.now()) {
+    if (!Number.isFinite(gateway.lat) || !Number.isFinite(gateway.lon)) throw new Error('Gateway sin coordenadas.');
+    const radius = 6378137; const radians = Math.PI / 180;
+    const cos = Math.cos(gateway.lat * radians);
+    const local = (lat, lon) => [(lon - gateway.lon) * radians * radius * cos, (lat - gateway.lat) * radians * radius];
+    const sources = []; const seen = new Set();
+    for (const node of nodes) {
+      const baseline = moistureSource(node, now);
+      if (baseline === null || seen.has(node.node_id)) continue;
+      const value = irrigation.get(node.node_id) ?? baseline;
+      if (!Number.isFinite(value) || value < 0 || value > 100) throw new Error('Humedad local fuera de rango.');
+      const [east, north] = local(node.lat, node.lon);
+      sources.push([east, north, value]); seen.add(node.node_id);
+    }
+    const points = []; const values = [];
+    if (sources.length) for (let north = -88; north <= 88; north += 11) {
+      for (let east = -88; east <= 88; east += 11) {
+        const distances = sources.map(([x, y, value]) => [Math.hypot(east - x, north - y), value]);
+        const exact = distances.find(([distance]) => distance <= 0.001);
+        let value;
+        if (exact) value = exact[1];
+        else {
+          const closest = Math.min(...distances.map(([distance]) => distance));
+          const weighted = distances.map(([distance, source]) => [(closest / distance) ** 2, source]);
+          value = weighted.reduce((sum, [weight, source]) => sum + weight * source, 0)
+            / weighted.reduce((sum, [weight]) => sum + weight, 0);
+        }
+        const lat = gateway.lat + north / radius / radians;
+        const lon = gateway.lon + east / (radius * cos) / radians;
+        values.push([lat, lon, value]); points.push([lat, lon, Math.max(0, Math.min(1, value / 100))]);
+      }
+    }
+    return {mode: 'simulation', layer: 'soil_moisture', unit: '%', grid_m: 11,
+      generated_at: new Date(now).toISOString(), source_count: sources.length, points, values,
+      preview: true, notice: 'Riego local de maqueta; IDW p=2 en metros, no persistido ni recibido por radio.'};
+  }
+
+  function twinPosition(node) {
+    if (!Number.isFinite(node.east_m) || !Number.isFinite(node.north_m)
+        || Math.abs(node.east_m) > 88 || Math.abs(node.north_m) > 88) return null;
+    return {x: 400 + node.east_m * 2.5, y: 290 - node.north_m * 2.5};
+  }
+
+  function twinVisualState(node, fireNodes = new Set()) {
+    // Un sensor sin alimentacion no tiene LED, aunque su alerta siga activa en Gateway.
+    return node.state === 'offline' ? 'offline' : nodeVisualState(node, fireNodes);
+  }
+
   // Funciones puras para verificacion opcional de JS, sin Node requerido en ejecucion.
-  window.VitiScan = Object.freeze({parseFrame, parentFor, nodeVisualState, nodeLabel, uncertainFailure});
+  window.VitiScan = Object.freeze({parseFrame, parentFor, nodeVisualState, nodeLabel, uncertainFailure,
+    moistureSource, irrigateSector, irrigationHeatmap, twinPosition, twinVisualState});
 
   const state = {config: null, token: '', busy: false, nodes: [], alerts: [], map: null,
     markers: new Map(), links: null, heat: null, heatmap: null, selected: 16, frames: [],
     layer: 'soil_moisture', generation: 0, refreshController: null, pendingKeys: new Map(),
-    alertTimer: null, networkTimer: null, clockTimer: null, stopped: false, didFit: false};
+    alertTimer: null, networkTimer: null, clockTimer: null, stopped: false, didFit: false,
+    irrigation: new Map(), backendHeatmap: null, twinFresh: false};
   const $ = id => document.getElementById(id);
   const element = (tag, text, className) => {
     const node = document.createElement(tag);
@@ -126,11 +203,15 @@
   function connection(ok, message) {
     $('connection').textContent = message;
     $('connection').className = `connection ${ok ? 'online' : 'error'}`;
+    $('twin-sync').textContent = ok ? 'ESTADO CONFIRMADO' : 'ÚLTIMO ESTADO · SIN CONEXIÓN';
+    $('twin-sync').className = `pill${ok ? ' twin-connected' : ' twin-disconnected'}`;
   }
 
   function actionMessage(message, error = false) {
     $('action-status').textContent = message;
     $('action-status').className = `status-message${error ? ' error' : ''}`;
+    $('twin-action-status').textContent = message;
+    $('twin-action-status').className = `status-message${error ? ' error' : ''}`;
   }
 
   function updateButtons() {
@@ -139,6 +220,12 @@
       button.disabled = state.busy || !state.config?.actions_enabled || !authorized;
     });
     $('demo-panel').setAttribute('aria-busy', String(state.busy));
+    $('physical-twin').setAttribute('aria-busy', String(state.busy));
+    const branch = Number($('twin-sector').value);
+    const wettable = state.nodes.some(node => node.branch === branch && node.level <= 3
+      && moistureSource(node) !== null && (state.irrigation.get(node.node_id) ?? node.soil_moisture / 100) < 100);
+    $('twin-water').disabled = state.busy || !state.config?.actions_enabled || !authorized || !state.twinFresh || !wettable;
+    $('twin-clear-water').disabled = state.busy || !state.irrigation.size;
   }
 
   function showMapWarning(message) { $('map-warning').hidden = false; $('map-warning').textContent = message; }
@@ -194,6 +281,99 @@
     renderNetwork();
   }
 
+  const svgElement = (tag, attributes = {}, text) => {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, String(value));
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+
+  function renderTwin() {
+    const focusId = document.activeElement?.closest('[data-twin-node]')?.dataset.twinNode;
+    const fireNodes = new Set(state.alerts.filter(alert => alert.state === 'active').map(alert => alert.node_id));
+    const positions = new Map([[0, {x: 400, y: 290}]]);
+    for (const node of state.nodes) { const point = twinPosition(node); if (point) positions.set(node.node_id, point); }
+    const links = document.createDocumentFragment(); const nodes = document.createDocumentFragment();
+    const patches = document.createDocumentFragment();
+    for (const node of state.nodes) {
+      const point = positions.get(node.node_id); if (!point) continue;
+      const visual = twinVisualState(node, fireNodes); const parent = parentFor(node);
+      if (parent !== null && positions.has(parent)) {
+        const destination = positions.get(parent);
+        links.append(svgElement('path', {d: `M${point.x} ${point.y}L${destination.x} ${destination.y}`,
+          class: `twin-route ${visual}`, 'marker-end': 'url(#twin-route-arrow)',
+          'data-twin-child': node.node_id, 'data-twin-parent': parent,
+          'data-active': node.state !== 'seed'}));
+      }
+      if (state.irrigation.has(node.node_id) && moistureSource(node) !== null) {
+        patches.append(svgElement('circle', {cx: point.x, cy: point.y, r: 25, class: 'twin-wet-patch'}));
+      }
+      const group = svgElement('g', {transform: `translate(${point.x} ${point.y})`,
+        class: `twin-node ${visual}${state.selected === node.node_id ? ' selected' : ''}`,
+        role: 'button', tabindex: 0, 'data-twin-node': node.node_id,
+        'aria-pressed': state.selected === node.node_id,
+        'aria-label': `${nodeLabel(node.node_id)}, nivel ${node.level}, ${STATUS[visual]}${node.node_id === 1 ? ', poste repetidor con switch' : node.node_id === 16 ? ', MQ-2 en perímetro forestal' : ''}`});
+      if (node.node_id === 1) {
+        group.append(svgElement('path', {d: 'M-3-32H3V-3H-3ZM-13-27H13M-10-35Q0-43 10-35', class: 'twin-pole'}));
+      }
+      group.append(svgElement('circle', {r: 17, class: 'twin-node-target'}),
+        svgElement('circle', {r: 8, class: 'twin-node-led'}),
+        svgElement('text', {y: 31, 'text-anchor': 'middle', class: 'twin-node-label'}, nodeLabel(node.node_id)),
+        svgElement('title', {}, `${nodeLabel(node.node_id)} · N${node.level} · ${STATUS[visual]} · padre ${parent === null ? 'sin confirmar' : nodeLabel(parent)}`));
+      group.addEventListener('click', () => selectNode(node.node_id));
+      group.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectNode(node.node_id); }
+      });
+      nodes.append(group);
+    }
+    $('twin-links').replaceChildren(links); $('twin-nodes').replaceChildren(nodes);
+    $('twin-water-patches').replaceChildren(patches);
+    if (focusId) $('twin-nodes').querySelector(`[data-twin-node="${focusId}"]`)?.focus({preventScroll: true});
+    const failover = state.nodes.some(node => twinVisualState(node) === 'backup');
+    const indicators = [['twin-gateway-led', state.twinFresh ? 'normal' : 'unknown', 'Gateway'],
+      ['twin-failover-led', failover ? 'backup' : 'offline', 'Respaldo'],
+      ['twin-fire-led', fireNodes.size ? 'fire' : 'offline', 'Alarma']];
+    for (const [id, visual, label] of indicators) {
+      $(id).className = `twin-led ${visual}`;
+      $(id).setAttribute('aria-label', `${label}: ${visual === 'offline' ? 'apagado' : STATUS[visual]}`);
+    }
+    const pole = state.nodes.find(node => node.node_id === 1);
+    const cut = pole?.state === 'offline';
+    $('twin-cut-switch').setAttribute('aria-pressed', String(cut));
+    $('twin-switch-state').textContent = `Poste V-01: ${cut ? 'SIN ENERGÍA · switch cortado' : pole && ['online', 'sleeping'].includes(pole.state) ? 'ENERGIZADO' : 'sin confirmar'}`;
+    const selected = state.nodes.find(node => node.node_id === state.selected);
+    if (selected) {
+      const baseline = moistureSource(selected); const preview = state.irrigation.get(selected.node_id);
+      $('twin-node-detail').textContent = `${nodeLabel(selected.node_id)} · N${selected.level} · ${STATUS[twinVisualState(selected, fireNodes)]} · Humedad recibida: ${format(baseline, ' %')}${preview !== undefined && baseline !== null ? ` · Maqueta local: ${format(preview, ' %')}` : ''}${selected.node_id === 16 ? ' · MQ-2 sintético · escucha de 35 ms' : ''}`;
+    }
+    updateButtons();
+  }
+
+  function waterTwinSector() {
+    if ($('twin-water').disabled) return;
+    const branch = Number($('twin-sector').value);
+    state.irrigation = irrigateSector(state.nodes, state.irrigation, branch);
+    const target = state.nodes.find(node => node.branch === branch && node.level <= 3 && moistureSource(node) !== null);
+    if (target) state.selected = target.node_id;
+    state.layer = 'soil_moisture'; $('heat-layer').value = state.layer;
+    state.generation++; state.refreshController?.abort();
+    $('heat-visible').checked = true;
+    $('twin-irrigation-status').textContent = `Riego LOCAL activo · rama ${branch}, niveles 1–3 · hasta +20 puntos por pulsación (máximo 100%). IDW p=2 recalculado; no hay ingesta ni tramas de riego. Limpiar o Restaurar retira la previsualización.`;
+    renderNetwork();
+    renderHeatmap(state.backendHeatmap || {layer: state.layer, points: [], values: [], source_count: 0, grid_m: 11});
+    actionMessage(`Riego de maqueta en rama ${branch}: humedad e IDW locales actualizados, sin guardar mediciones.`);
+    $('map-probe').textContent = 'IDW de riego LOCAL · mueve el cursor para consultar humedad.';
+    refresh(true);
+  }
+
+  function clearTwinWater() {
+    state.irrigation.clear();
+    $('twin-irrigation-status').textContent = 'Sin riego local. La malla vuelve a los valores confirmados del backend; no se modificó el historial.';
+    renderTwin();
+    renderHeatmap(state.backendHeatmap?.layer === state.layer ? state.backendHeatmap
+      : {layer: state.layer, points: [], values: [], source_count: 0, grid_m: 11});
+  }
+
   function renderNetwork() {
     const focusedId = document.activeElement?.closest('#node-table tr')?.dataset.nodeId;
     const fireNodes = new Set(state.alerts.filter(alert => alert.state === 'active').map(alert => alert.node_id));
@@ -238,6 +418,7 @@
     $('node-table').replaceChildren(table);
     if (focusedId) $('node-table').querySelector(`[data-node-id="${focusedId}"]`)?.focus({preventScroll: true});
     renderDetail();
+    renderTwin();
     if (!state.didFit && state.nodes.length && state.map) { fitNetwork(); state.didFit = true; }
   }
 
@@ -276,12 +457,20 @@
   }
 
   function renderHeatmap(result) {
+    state.backendHeatmap = result;
+    if (state.layer === 'soil_moisture' && state.irrigation.size && state.config) {
+      result = irrigationHeatmap(state.nodes, state.irrigation, state.config.gateway);
+    }
     state.heatmap = result;
+    if (state.lastProbeLatLng) probeHeatmap(state.lastProbeLatLng);
+    else $('map-probe').textContent = result.preview
+      ? 'IDW de riego LOCAL · mueve el cursor para consultar humedad.'
+      : 'Mueve el cursor para consultar una celda IDW.';
     const layer = LAYERS[state.layer];
     $('heat-unit').textContent = layer.title; $('heat-low').textContent = layer.low; $('heat-high').textContent = layer.high;
     const colors = Object.entries(layer.gradient).sort((a, b) => Number(a[0]) - Number(b[0]));
     $('heat-gradient').style.background = `linear-gradient(90deg, ${colors.map(([stop, color]) => `${color} ${Number(stop) * 100}%`).join(', ')})`;
-    $('source-count').textContent = `${result.source_count}/20 fuentes · ${result.points.length} celdas · IDW p=2`;
+    $('source-count').textContent = `${result.source_count}/20 fuentes · ${result.points.length} celdas · IDW p=2${result.preview ? ' · RIEGO LOCAL' : ''}`;
     if (!state.map) return;
     if (state.heat) { state.map.removeLayer(state.heat); state.heat = null; }
     if (!$('heat-visible').checked || !result.points.length) return;
@@ -331,14 +520,18 @@
   }
 
   function probeHeatmap(latlng) {
-    if (!state.heatmap?.values?.length) return;
+    state.lastProbeLatLng = latlng;
+    if (!state.heatmap?.values?.length) {
+      $('map-probe').textContent = 'Sin celdas IDW válidas en la capa seleccionada.';
+      return;
+    }
     let best = null; let distance = Infinity;
     for (const cell of state.heatmap.values) {
       const d = (cell[0] - latlng.lat) ** 2 + ((cell[1] - latlng.lng) * Math.cos(latlng.lat * Math.PI / 180)) ** 2;
       if (d < distance) { distance = d; best = cell; }
     }
     $('map-probe').textContent = best && distance < 0.0003 ** 2
-      ? `Celda IDW: ${format(best[2], ' ' + LAYERS[state.layer].unit)} · ${best[0].toFixed(5)}, ${best[1].toFixed(5)}`
+      ? `Celda IDW${state.heatmap.preview ? ' · LOCAL' : ''}: ${format(best[2], ' ' + LAYERS[state.layer].unit)} · ${best[0].toFixed(5)}, ${best[1].toFixed(5)}`
       : 'Fuera de la malla del viñedo.';
   }
 
@@ -390,10 +583,13 @@
       const [network, heat, alerts] = await Promise.all(requests);
       if (state.generation !== generation || state.layer !== layer || controller.signal.aborted) return;
       state.nodes = network.nodes;
+      state.twinFresh = true;
       if (alerts) state.alerts = alerts.alerts;
       renderNetwork(); renderAlerts(); renderHeatmap(heat); connection(true, 'Gateway conectado');
     } catch (error) {
-      if (error.name !== 'AbortError' && generation === state.generation) connection(false, 'Sin conexión · conservando último estado');
+      if (error.name !== 'AbortError' && generation === state.generation) {
+        state.twinFresh = false; renderTwin(); connection(false, 'Sin conexión · conservando último estado');
+      }
     } finally { if (state.refreshController === controller) state.refreshController = null; }
   }
 
@@ -439,6 +635,7 @@
         const frame = parseFrame(firePacket.payload_hex);
         applyAlerts([{node_id: frame.readings[0].node_id, state: 'active', reason: 'radio_flag', latency_ms: result.latency_ms}]);
       } else if (action === 'restore') applyAlerts([]);
+      if (action === 'restore') clearTwinWater();
       showPackets(result.packets);
       if (action === 'failover') actionMessage('19/20 recuperados · V-01 caído · V-06 → V-02 por respaldo.');
       else if (action === 'fire') actionMessage('FIRE_ALERT 0xFF confirmado · foco V-16 · escucha de 35 ms validada.');
@@ -456,6 +653,9 @@
 
   async function boot() {
     document.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => runAction(button.dataset.action)));
+    $('twin-water').addEventListener('click', waterTwinSector);
+    $('twin-clear-water').addEventListener('click', () => { clearTwinWater(); refresh(true); });
+    $('twin-sector').addEventListener('change', updateButtons);
     $('frame-select').addEventListener('change', event => showFrame(Number(event.target.value)));
     $('fit-network').addEventListener('click', fitNetwork);
     $('heat-layer').addEventListener('change', () => {
@@ -464,7 +664,7 @@
       $('source-count').textContent = 'Actualizando malla…'; $('map-probe').textContent = 'Esperando la capa seleccionada.';
       refresh(true);
     });
-    $('heat-visible').addEventListener('change', () => { if (state.heatmap?.layer === state.layer) renderHeatmap(state.heatmap); });
+    $('heat-visible').addEventListener('change', () => { if (state.backendHeatmap?.layer === state.layer) renderHeatmap(state.backendHeatmap); });
     $('token-form').addEventListener('submit', event => {
       event.preventDefault(); state.token = $('operator-token').value.trim(); $('operator-token').value = '';
       $('auth-state').textContent = state.token ? 'TOKEN EN MEMORIA' : 'SIN TOKEN'; updateButtons();

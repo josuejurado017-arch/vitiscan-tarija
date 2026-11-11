@@ -138,6 +138,45 @@ async function main() {
       await evaluate(`document.getElementById('heat-layer').value=${JSON.stringify(layer)}; document.getElementById('heat-layer').dispatchEvent(new Event('change'))`);
       await waitFor(() => evaluate(`document.getElementById('heat-unit').textContent.includes(${JSON.stringify(label)}) && document.getElementById('source-count').textContent.includes('20/20')`), layer);
     }
+    // Maqueta: el riego nunca se convierte en medicion ni inventa tramas del Gateway.
+    assert.equal(await evaluate("document.querySelectorAll('#twin-nodes [data-twin-node]').length"), 20);
+    assert.equal(await evaluate("document.getElementById('twin-gateway-led').classList.contains('normal')"), true);
+    await evaluate(`(async () => { window.__soilBefore=JSON.stringify((await (await fetch('/api/v1/nodes/status')).json()).nodes.map(node=>node.soil_moisture));
+      window.__heatBefore=JSON.stringify((await (await fetch('/api/v1/heatmap/soil_moisture')).json()).values);
+      window.__hexBefore=document.getElementById('hex-viewer').textContent;
+      document.getElementById('twin-water').click(); })()`);
+    await waitFor(() => evaluate("document.getElementById('source-count').textContent.includes('RIEGO LOCAL') && document.querySelectorAll('.twin-wet-patch').length === 3"), 'riego local e IDW');
+    assert.equal(await evaluate("document.getElementById('twin-node-detail').textContent.includes('Maqueta local:')"), true);
+    await delay(2300); // Un refresco del backend no borra la previsualizacion local.
+    assert.equal(await evaluate("document.getElementById('source-count').textContent.includes('RIEGO LOCAL')"), true);
+    assert.equal(await evaluate("(async () => JSON.stringify((await (await fetch('/api/v1/nodes/status')).json()).nodes.map(node=>node.soil_moisture))===window.__soilBefore)()"), true);
+    assert.equal(await evaluate("(async () => JSON.stringify((await (await fetch('/api/v1/heatmap/soil_moisture')).json()).values)===window.__heatBefore)()"), true);
+    assert.equal(await evaluate("document.getElementById('hex-viewer').textContent===window.__hexBefore"), true);
+    await evaluate("document.getElementById('twin-clear-water').click()");
+    await waitFor(() => evaluate("!document.getElementById('source-count').textContent.includes('RIEGO LOCAL') && !document.querySelector('.twin-wet-patch')"), 'limpiar riego');
+    assert.equal(await evaluate("document.getElementById('map-probe').textContent.includes('LOCAL')"), false);
+    const twinAction = async (id, text) => {
+      await evaluate(`document.getElementById(${JSON.stringify(id)}).click()`);
+      await waitFor(() => evaluate(`!document.getElementById(${JSON.stringify(id)}).disabled && document.getElementById('twin-action-status').textContent.includes(${JSON.stringify(text)})`), id);
+    };
+    await twinAction('twin-cut-switch', '19/20');
+    assert.equal(await evaluate("document.querySelector('[data-twin-node=\"1\"]').classList.contains('offline')"), true);
+    assert.equal(await evaluate("document.getElementById('twin-cut-switch').getAttribute('aria-pressed')"), 'true');
+    assert.equal(await evaluate("document.getElementById('twin-failover-led').classList.contains('backup')"), true);
+    assert.equal(await evaluate("Boolean(document.querySelector('[data-twin-child=\"6\"][data-twin-parent=\"2\"][data-active=\"true\"]'))"), true);
+    await twinAction('twin-smoke', '0xFF');
+    assert.equal(await evaluate("document.getElementById('twin-fire-led').classList.contains('fire')"), true);
+    assert.equal(await evaluate("document.querySelector('[data-twin-node=\"16\"]').classList.contains('fire')"), true);
+    assert.equal(await evaluate("document.getElementById('heat-layer').value"), 'gas_smoke_ppm');
+    await evaluate(`document.querySelector('[data-twin-node="16"]').dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true}));`);
+    assert.equal(await evaluate("document.querySelector('[data-twin-node=\"16\"]').getAttribute('aria-pressed')"), 'true');
+    const twinShot = await send('Page.captureScreenshot', {format: 'png', captureBeyondViewport: true});
+    await fs.writeFile(path.join(artifacts, 'physical-twin-fire.png'), Buffer.from(twinShot.data, 'base64'));
+    await action('restore', '20/20');
+    assert.equal(await evaluate("document.getElementById('twin-fire-led').classList.contains('offline')"), true);
+    assert.equal(await evaluate("document.getElementById('twin-cut-switch').getAttribute('aria-pressed')"), 'false');
+    await send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-reduced-motion', value: 'reduce'}]});
+    assert.equal(await evaluate("getComputedStyle(document.getElementById('twin-gateway-led')).animationName"), 'none');
     await send('Emulation.setDeviceMetricsOverride', {width: 390, height: 844, deviceScaleFactor: 1, mobile: true});
     await delay(300);
     assert.equal(await evaluate('document.documentElement.scrollWidth <= window.innerWidth'), true, 'Sin overflow horizontal movil');
@@ -147,6 +186,7 @@ async function main() {
     console.log(`BROWSER OK: 20/20 -> 19/20 (V-06 -> V-02) -> 0xFF V-16 -> restaurar 20/20.`);
     console.log(`Banner web confirmado en ${visibleMs} ms. Latencia RF virtual se conserva separada.`);
     console.log(`Evento externo detectado por polling en ${externalMs} ms; cinco capas verificadas.`);
+    console.log('MAQUETA OK: riego/IDW local sin persistencia, switch V-01/failover, MQ-2/0xFF, teclado y movimiento reducido.');
     console.log(`Capturas: ${artifacts}`);
     await send('Browser.close').catch(() => {});
   } catch (error) {
